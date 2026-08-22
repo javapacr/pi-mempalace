@@ -1,10 +1,10 @@
 {
-  "name": "pi-mempalace-tools",
+  "name": "pi-mempalace",
   "version": "0.1.0",
   "description": "MemPalace session lifecycle extension — palace-aware recall, wake-up context, curation, mining, and dormant maintenance tools (delete-wing, repair-fts5)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/javapacr/pi-mempalace-tools.git"
+    "url": "https://github.com/javapacr/pi-mempalace.git"
   },
   "author": "javapacr",
   "license": "MIT",

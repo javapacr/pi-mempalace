@@ -1,4 +1,4 @@
-# pi-mempalace-tools
+# pi-mempalace
 
 MemPalace session lifecycle extension for [pi](https://github.com/earendil-works/pi) — palace-aware recall, wake-up context injection, automated curation, and session mining.
 
@@ -78,10 +78,10 @@ Rebuild the MemPalace ChromaDB FTS5 full-text index when SQLite reports corrupti
 
 ```bash
 # Clone
-git clone https://github.com/javapacr/pi-mempalace-tools.git
+git clone https://github.com/javapacr/pi-mempalace.git
 
 # Install dev dependencies
-cd pi-mempalace-tools
+cd pi-mempalace
 npm install
 
 # Build check
