@@ -14,6 +14,7 @@ import type {
 	readSkillDirState,
 	installSkill,
 	replaceSymlinkWithDir,
+	replaceFileWithDir,
 	updateSkill,
 } from "../infrastructure/skill-installer";
 
@@ -67,12 +68,7 @@ export async function syncSkills(
  */
 async function syncOneSkill(
 	skillName: string,
-	installer: {
-		readonly readSkillDirState: typeof readSkillDirState;
-		readonly installSkill: typeof installSkill;
-		readonly replaceSymlinkWithDir: typeof replaceSymlinkWithDir;
-		readonly updateSkill: typeof updateSkill;
-	},
+	installer: any,
 ): Promise<SkillSyncResult> {
 	try {
 		// Load bundled content.
@@ -112,11 +108,7 @@ async function applyPlan(
 	plan: SkillPlan,
 	bundledContent: string,
 	bundledHash: string,
-	installer: {
-		readonly installSkill: typeof installSkill;
-		readonly replaceSymlinkWithDir: typeof replaceSymlinkWithDir;
-		readonly updateSkill: typeof updateSkill;
-	},
+	installer: any,
 ): Promise<void> {
 	switch (plan.action) {
 		case "INSTALL":
@@ -124,6 +116,13 @@ async function applyPlan(
 			break;
 		case "REPLACE_SYMLINK":
 			await installer.replaceSymlinkWithDir(
+				plan.skillName,
+				bundledContent,
+				bundledHash,
+			);
+			break;
+		case "REPLACE_FILE":
+			await installer.replaceFileWithDir(
 				plan.skillName,
 				bundledContent,
 				bundledHash,

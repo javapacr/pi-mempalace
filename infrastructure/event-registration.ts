@@ -18,7 +18,15 @@ import type { WakeUpUseCase } from "../application/wake-up.usecase";
 import type { RecallUseCase } from "../application/recall.usecase";
 import type { CurationUseCase } from "../application/curation.usecase";
 import type { MiningUseCase } from "../application/mining.usecase";
+import type { SkillSyncReport } from "../application/skill-sync.usecase";
 import { syncSkills } from "../application/skill-sync.usecase";
+import type {
+	readSkillDirState,
+	installSkill,
+	replaceSymlinkWithDir,
+	replaceFileWithDir,
+	updateSkill,
+} from "../infrastructure/skill-installer";
 
 export function registerMempalaceEvents(
 	pi: ExtensionAPI,
@@ -28,10 +36,11 @@ export function registerMempalaceEvents(
 	curation: CurationUseCase,
 	mining: MiningUseCase,
 	skillInstaller: {
-		readonly readSkillDirState: any;
-		readonly installSkill: any;
-		readonly replaceSymlinkWithDir: any;
-		readonly updateSkill: any;
+		readonly readSkillDirState: typeof readSkillDirState;
+		readonly installSkill: typeof installSkill;
+		readonly replaceSymlinkWithDir: typeof replaceSymlinkWithDir;
+		readonly replaceFileWithDir: typeof replaceFileWithDir;
+		readonly updateSkill: typeof updateSkill;
 	},
 ): void {
 	// ── session_start — reset counter + load wake-up context + sync skills ─────────────
@@ -45,6 +54,22 @@ export function registerMempalaceEvents(
 
 		// Sync skills fire-and-forget. Swallow errors.
 		syncSkills(skillInstaller).catch(() => {});
+	});
+
+	// ── Manual sync command ─────────────────────────────────────────────────
+	pi.registerCommand("mempalace-skills-sync", {
+		description:
+			"Force MemPalace skill sync (install/update skills from bundled versions)",
+		handler: async (_args, ctx) => {
+			const report: SkillSyncReport = await syncSkills(skillInstaller);
+
+			const results = report.skills.map(
+				({ skillName, action, success, error }) =>
+					`${skillName}: ${action} ${success ? "✓" : "✗"}${error ? ` — ${error}` : ""}`,
+			);
+
+			ctx.ui.notify(`MemPalace skill sync:\n${results.join("\n")}`, "info");
+		},
 	});
 
 	// ── before_agent_start — inject memories + wake-up into system prompt ────

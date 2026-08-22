@@ -6,10 +6,10 @@
  * or ~/.agents/.skill-lock.json.
  */
 
-import { readFile, readdir, lstat, mkdir, unlink, writeFile } from "node:fs/promises";
+import { readFile, lstat, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SkillDirState, Marker } from "../domain/skill-sync";
-import { MARKER_FILE } from "../domain/skill-sync";
+import { MARKER_FILE, hashContent } from "../domain/skill-sync";
 
 const SKILL_FILE = "SKILL.md";
 
@@ -42,6 +42,7 @@ export async function readSkillDirState(
 			return {
 				exists: true,
 				isSymlink: true,
+				isDir: false,
 				skillHash: null,
 				marker: null,
 			};
@@ -53,6 +54,7 @@ export async function readSkillDirState(
 				isSymlink: false,
 				skillHash: null,
 				marker: null,
+				isDir: false,
 			};
 		}
 
@@ -81,22 +83,18 @@ export async function readSkillDirState(
 			isSymlink: false,
 			skillHash,
 			marker,
+			isDir: true,
 		};
 	} catch {
 		// Path doesn't exist or access error.
 		return {
 			exists: false,
 			isSymlink: false,
+			isDir: false,
 			skillHash: null,
 			marker: null,
 		};
 	}
-}
-
-/** Compute SHA-256 hash (reused from domain for convenience). */
-function hashContent(content: string): string {
-	const { createHash } = require("node:crypto");
-	return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 /**
@@ -157,6 +155,27 @@ export async function replaceSymlinkWithDir(
 	const skillPath = join(baseDir, skillName);
 
 	// Remove symlink only.
+	await unlink(skillPath);
+
+	// Install real directory.
+	await installSkill(skillName, content, skillHash, baseDir);
+}
+
+/**
+ * Replace a plain file (not symlink, not dir) with a real directory.
+ *
+ * Happens when something mistakenly wrote a file at the skill path.
+ * Unlinks the file, then installs the directory.
+ */
+export async function replaceFileWithDir(
+	skillName: string,
+	content: string,
+	skillHash: string,
+	baseDir: string = DEFAULT_AGENT_SKILLS_DIR,
+): Promise<void> {
+	const skillPath = join(baseDir, skillName);
+
+	// Remove the file.
 	await unlink(skillPath);
 
 	// Install real directory.

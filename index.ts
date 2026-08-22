@@ -50,6 +50,12 @@ export default function mempalaceExtension(pi: ExtensionAPI): void {
 		recall,
 		curation,
 		mining,
-		skillInstaller,
+		{
+			readSkillDirState: skillInstaller.readSkillDirState,
+			installSkill: skillInstaller.installSkill,
+			replaceSymlinkWithDir: skillInstaller.replaceSymlinkWithDir,
+			replaceFileWithDir: skillInstaller.replaceFileWithDir,
+			updateSkill: skillInstaller.updateSkill,
+		},
 	);
 }

@@ -8,7 +8,7 @@
 
 import { createHash } from "node:crypto";
 
-export type SkillAction = "INSTALL" | "REPLACE_SYMLINK" | "UPDATE" | "NOOP";
+export type SkillAction = "INSTALL" | "REPLACE_SYMLINK" | "REPLACE_FILE" | "UPDATE" | "NOOP";
 
 export interface SkillPlan {
 	readonly skillName: string;
@@ -35,6 +35,8 @@ export interface SkillDirState {
 	readonly exists: boolean;
 	/** Is it a symlink? (only meaningful when exists=true) */
 	readonly isSymlink: boolean;
+	/** Is it a real directory? (only meaningful when exists=true and not a symlink) */
+	readonly isDir: boolean;
 	/** SHA-256 hash of SKILL.md if readable, else null. */
 	readonly skillHash: string | null;
 	/** Marker content if present, else null. */
@@ -88,6 +90,17 @@ export function buildSkillPlan(
 			bundledHash,
 			installedHash: state.skillHash ?? null,
 			reason: "Existing installation is a symlink (npx skills)",
+		};
+	}
+
+	// Path exists but is not a directory (i.e., a plain file). Replace with directory.
+	if (!state.isDir) {
+		return {
+			skillName,
+			action: "REPLACE_FILE",
+			bundledHash,
+			installedHash: state.skillHash ?? null,
+			reason: "Path exists as a plain file, replacing with directory",
 		};
 	}
 

@@ -84,6 +84,22 @@ This extension now **owns the installation and updates** of the MemPalace agent 
 - The sync runs fire-and-forget — errors are swallowed to never block session startup
 - A `.pi-mempalace.json` marker in each skill directory records the managedBy, skillHash, and syncedAt timestamp
 
+### Manual sync command
+
+Force a skill sync from the TUI or shell with:
+
+```
+/mempalace-skills-sync
+```
+
+This runs the sync synchronously and returns a per-skill result:
+
+```
+MemPalace skill sync:
+mempalace: NOOP ✓
+mempalace-recall: UPDATE ✓
+```
+
 ### Replacing npx skills
 
 Previously, the skills were installed via the `npx skills` CLI (the skills.sh ecosystem), which writes to `~/.agents/skills/` and creates symlinks in `~/.pi/agent/skills/`. The cross-agent lockfile `~/.agents/.skill-lock.json` and the `~/.agents/skills/` directory are **intentionally left untouched** — they may still be used by other agents (Cursor, Zed, etc.). The extension only manages the pi-specific skill files at `~/.pi/agent/skills/`.

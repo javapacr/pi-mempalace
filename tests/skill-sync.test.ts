@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import { hashContent, buildSkillPlan, parseMarker, type Marker, MARKER_FILE } from "../domain/skill-sync";
-import { readSkillDirState, atomicWriteSkill, writeMarker, installSkill, replaceSymlinkWithDir, updateSkill } from "../infrastructure/skill-installer";
+import { readSkillDirState, atomicWriteSkill, writeMarker, installSkill, replaceSymlinkWithDir, replaceFileWithDir, updateSkill } from "../infrastructure/skill-installer";
 
 const TEST_SKILLS_BASE = join(tmpdir(), "test-pi-mempalace-skills");
 const SKILL_FILE = "SKILL.md";
@@ -53,6 +53,7 @@ describe("domain/skill-sync", () => {
 			const plan = buildSkillPlan("test-skill", "content", {
 				exists: false,
 				isSymlink: false,
+				isDir: false,
 				skillHash: null,
 				marker: null,
 			});
@@ -64,6 +65,7 @@ describe("domain/skill-sync", () => {
 			const plan = buildSkillPlan("test-skill", "new content", {
 				exists: true,
 				isSymlink: true,
+				isDir: false,
 				skillHash: null,
 				marker: null,
 			});
@@ -76,6 +78,7 @@ describe("domain/skill-sync", () => {
 			const plan = buildSkillPlan("test-skill", "content", {
 				exists: true,
 				isSymlink: false,
+				isDir: true,
 				skillHash: bundledHash,
 				marker: {
 					managedBy: "pi-mempalace",
@@ -90,6 +93,7 @@ describe("domain/skill-sync", () => {
 			const plan = buildSkillPlan("test-skill", "new content", {
 				exists: true,
 				isSymlink: false,
+				isDir: true,
 				skillHash: hashContent("old content"),
 				marker: {
 					managedBy: "pi-mempalace",
@@ -99,6 +103,18 @@ describe("domain/skill-sync", () => {
 			});
 			if (plan.action !== "UPDATE") throw new Error("Should plan UPDATE");
 			if (!plan.reason.includes("differs")) throw new Error("Reason should mention hash difference");
+		});
+
+		it("plans REPLACE_FILE when path is a plain file", () => {
+			const plan = buildSkillPlan("test-skill", "new content", {
+				exists: true,
+				isSymlink: false,
+				isDir: false,
+				skillHash: null,
+				marker: null,
+			});
+			if (plan.action !== "REPLACE_FILE") throw new Error("Should plan REPLACE_FILE");
+			if (!plan.reason.includes("plain file")) throw new Error("Reason should mention plain file");
 		});
 	});
 });
@@ -141,6 +157,9 @@ describe("infrastructure/skill-installer (with tempdir)", () => {
 		const skillDir = await setupMockEnv("test-replace");
 		const decoyDir = join(baseDir, "decoy");
 		await mkdir(decoyDir, { recursive: true });
+		// Write real content into the decoy target
+		const decoyContent = "# Decoy skill content";
+		await writeFile(join(decoyDir, SKILL_FILE), decoyContent);
 		await symlink(decoyDir, skillDir);
 
 		const content = "# Replaced Skill";
@@ -155,9 +174,11 @@ describe("infrastructure/skill-installer (with tempdir)", () => {
 		const installedContent = await readFile(join(skillDir, SKILL_FILE));
 		if (installedContent !== content) throw new Error("Content mismatch after replace");
 
-		// Decoy directory should still exist and be untouched.
-		const decoyContent = await readFile(join(decoyDir, SKILL_FILE)).catch(() => "");
-		if (decoyContent !== "") throw new Error("Decoy should be untouched");
+		// Decoy directory should still exist with its original content.
+		const decoyReadContent = await readFile(join(decoyDir, SKILL_FILE)).catch(() => "");
+		if (decoyReadContent !== decoyContent) {
+			throw new Error("Decoy content should remain unchanged");
+		}
 	});
 
 	it("updates an existing skill directory", async () => {
@@ -178,6 +199,30 @@ describe("infrastructure/skill-installer (with tempdir)", () => {
 		const markerContent = await readFile(join(skillDir, MARKER_FILE));
 		const marker = JSON.parse(markerContent) as Marker;
 		if (marker.skillHash !== newHash) throw new Error("Marker hash should be updated");
+	});
+
+	it("replaces a plain file with a real directory", async () => {
+		const skillPath = await setupMockEnv("test-replace-file");
+		// Write a plain file where a directory should be
+		await writeFile(skillPath, "# Wrong file");
+
+		const content = "# Correct Skill";
+		const skillHash = hashContent(content);
+
+		await replaceFileWithDir("test-replace-file", content, skillHash, baseDir);
+
+		const stat = await lstat(skillPath);
+		if (stat.isSymbolicLink()) throw new Error("Should not be a symlink");
+		if (!stat.isDirectory()) throw new Error("Should be a directory");
+
+		const installedContent = await readFile(join(skillPath, SKILL_FILE));
+		if (installedContent !== content) throw new Error("Content mismatch after replace");
+
+		const markerContent = await readFile(join(skillPath, MARKER_FILE));
+		const marker = JSON.parse(markerContent) as Marker;
+		if (marker.managedBy !== "pi-mempalace" || marker.skillHash !== skillHash) {
+			throw new Error("Marker should be written correctly");
+		}
 	});
 });
 
