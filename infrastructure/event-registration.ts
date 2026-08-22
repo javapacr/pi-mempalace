@@ -18,6 +18,7 @@ import type { WakeUpUseCase } from "../application/wake-up.usecase";
 import type { RecallUseCase } from "../application/recall.usecase";
 import type { CurationUseCase } from "../application/curation.usecase";
 import type { MiningUseCase } from "../application/mining.usecase";
+import { syncSkills } from "../application/skill-sync.usecase";
 
 export function registerMempalaceEvents(
 	pi: ExtensionAPI,
@@ -26,8 +27,14 @@ export function registerMempalaceEvents(
 	recall: RecallUseCase,
 	curation: CurationUseCase,
 	mining: MiningUseCase,
+	skillInstaller: {
+		readonly readSkillDirState: any;
+		readonly installSkill: any;
+		readonly replaceSymlinkWithDir: any;
+		readonly updateSkill: any;
+	},
 ): void {
-	// ── session_start — reset counter + load wake-up context ─────────────────
+	// ── session_start — reset counter + load wake-up context + sync skills ─────────────
 	pi.on("session_start", async (_event, ctx) => {
 		state.reset();
 		// Skip wake-up in print mode — we're a curation subprocess.
@@ -35,6 +42,9 @@ export function registerMempalaceEvents(
 		// Pre-warm config so session_shutdown can spawn synchronously.
 		state.config = await resolveMempalaceConfig(ctx.cwd);
 		state.wakeUpContext = await wakeUp.execute(ctx.cwd);
+
+		// Sync skills fire-and-forget. Swallow errors.
+		syncSkills(skillInstaller).catch(() => {});
 	});
 
 	// ── before_agent_start — inject memories + wake-up into system prompt ────

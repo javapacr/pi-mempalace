@@ -14,23 +14,29 @@ index.ts                          # Entry — wires up use cases + event registr
 │   ├── wake-up.usecase.ts        # Loads L0+L1 wake-up context into system prompt
 │   ├── recall.usecase.ts         # Per-prompt memory recall + injection
 │   ├── curation.usecase.ts       # Automated diary/drawer/KG curation via subagents
-│   └── mining.usecase.ts         # Session transcript mining before compaction
+│   ├── mining.usecase.ts         # Session transcript mining before compaction
+│   └── skill-sync.usecase.ts     # Syncs bundled skills to ~/.pi/agent/skills/
 ├── domain/                       # Pure business logic (no I/O)
 │   ├── types.ts                  # Core types (SessionState, MempalaceConfig, etc.)
 │   ├── palace-router.ts          # Reads mempalace.yaml → palace/wing resolution
 │   ├── recall-parser.ts          # Parses search snippets into recall context
-│   └── curation-prompt.ts        # Builds curation subagent prompts
+│   ├── curation-prompt.ts        # Builds curation subagent prompts
+│   └── skill-sync.ts             # Skill sync planning logic (pure)
 ├── infrastructure/               # External integrations
 │   ├── mempalace-cli.ts          # Wraps the `mempalace` CLI commands
+│   ├── skill-installer.ts        # Filesystem operations for skill install/update
 │   └── event-registration.ts     # Registers lifecycle hooks with pi
 ├── ui/
 │   └── recall-renderer.ts        # Custom TUI rendering for recall results
-└── tools/                        # Dormant maintenance tools (NOT registered)
-    ├── delete-wing.tool.ts       # Delete all drawers in a wing (dry-run capable)
-    ├── repair-fts5.tool.ts       # Rebuild ChromaDB FTS5 full-text index
-    └── scripts/                  # Python helpers called by the tools
-        ├── delete-wing.py
-        └── repair-fts5.py
+├── tools/                        # Dormant maintenance tools (NOT registered)
+│   ├── delete-wing.tool.ts       # Delete all drawers in a wing (dry-run capable)
+│   ├── repair-fts5.tool.ts       # Rebuild ChromaDB FTS5 full-text index
+│   └── scripts/                  # Python helpers called by the tools
+│       ├── delete-wing.py
+│       └── repair-fts5.py
+└── skills/                       # Bundled skill files (source of truth)
+    ├── mempalace/SKILL.md
+    └── mempalace-recall/SKILL.md
 ```
 
 ## Active Features (Lifecycle Hooks)
@@ -63,6 +69,26 @@ Delete all drawers and closets in a MemPalace wing. Runs in **dry-run mode** by 
 ### `mempalace_repair_fts5`
 
 Rebuild the MemPalace ChromaDB FTS5 full-text index when SQLite reports corruption (e.g., "malformed inverted index"). Creates a timestamped backup, recreates the FTS5 virtual table from `embedding_metadata`, verifies `PRAGMA quick_check`, and optionally runs `mempalace repair --yes`.
+
+## Skill Ownership
+
+This extension now **owns the installation and updates** of the MemPalace agent skills (`mempalace`, `mempalace-recall`). It bundles copies of these skills (from `skills/` directory) and syncs them to `~/.pi/agent/skills/` on every session start.
+
+### How it works
+
+- On `session_start`, the extension checks each managed skill against the bundled version:
+  - **MISSING**: Installs a real directory with SKILL.md and a `.pi-mempalace.json` marker
+  - **SYMLINK** (from `npx skills`): Replaces the symlink with a real directory, taking ownership
+  - **STALE** (hash differs): Updates the SKILL.md and marker
+  - **CURRENT**: No-op
+- The sync runs fire-and-forget — errors are swallowed to never block session startup
+- A `.pi-mempalace.json` marker in each skill directory records the managedBy, skillHash, and syncedAt timestamp
+
+### Replacing npx skills
+
+Previously, the skills were installed via the `npx skills` CLI (the skills.sh ecosystem), which writes to `~/.agents/skills/` and creates symlinks in `~/.pi/agent/skills/`. The cross-agent lockfile `~/.agents/.skill-lock.json` and the `~/.agents/skills/` directory are **intentionally left untouched** — they may still be used by other agents (Cursor, Zed, etc.). The extension only manages the pi-specific skill files at `~/.pi/agent/skills/`.
+
+If you previously installed the skills via `npx skills`, the symlink replacement happens automatically on first session start. The old npx lockfile entry remains but is harmless.
 
 ## Dependencies
 

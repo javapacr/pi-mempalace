@@ -30,6 +30,8 @@ import { WakeUpUseCase } from "./application/wake-up.usecase";
 import { RecallUseCase } from "./application/recall.usecase";
 import { CurationUseCase } from "./application/curation.usecase";
 import { MiningUseCase } from "./application/mining.usecase";
+import { syncSkills } from "./application/skill-sync.usecase";
+import * as skillInstaller from "./infrastructure/skill-installer";
 
 export default function mempalaceExtension(pi: ExtensionAPI): void {
 	const state = new SessionState();
@@ -41,5 +43,13 @@ export default function mempalaceExtension(pi: ExtensionAPI): void {
 	const mining = new MiningUseCase(cli);
 
 	registerRecallRenderer(pi);
-	registerMempalaceEvents(pi, state, wakeUp, recall, curation, mining);
+	registerMempalaceEvents(
+		pi,
+		state,
+		wakeUp,
+		recall,
+		curation,
+		mining,
+		skillInstaller,
+	);
 }
