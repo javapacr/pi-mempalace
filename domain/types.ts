@@ -9,7 +9,6 @@ import { join } from "node:path";
 
 // ── Palace paths ──────────────────────────────────────────────────────────────
 
-export const PERSONAL_PALACE = join(homedir(), ".config", "mempalace", "palace");
 export const CVP_PALACE = join(homedir(), ".config", "mempalace", "cvp");
 export const CVP_ROOT = join(homedir(), "Documents", "projects", "tml", "cvp");
 

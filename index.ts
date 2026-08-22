@@ -4,10 +4,13 @@
  * Palace-aware routing: reads `mempalace.yaml` in cwd to determine which
  * palace and wing to use. Falls back to a CVP palace for paths under
  * ~/Documents/projects/tml/cvp, and to the personal palace everywhere else.
+ * The personal palace default now uses the env → settings → home-relative
+ * chain (Aug 8 backlog resolution).
  *
  * Active features (lifecycle hooks):
  * - session_start        — load wake-up context (L0+L1 ~940 tokens) into the
- *                          system prompt; reset conversation counter
+ *                          system prompt; reset conversation counter; sync
+ *                          skills; ensure MCP server registration
  * - before_agent_start   — recall per-prompt memories and inject them into
  *                          the system prompt
  * - agent_end            — every SAVE_INTERVAL (15) exchanges, dispatch a
@@ -15,6 +18,10 @@
  * - session_before_compact — mine the session transcript before it is
  *                          summarised, preserving verbatim text in MemPalace
  * - session_shutdown     — background mine on quit
+ *
+ * Manual commands:
+ * - /mempalace-skills-sync  — force skill sync
+ * - /mempalace-mcp-status   — show MCP server registration status
  *
  * Dormant tools (code kept, NOT registered):
  * - mempalace_delete_wing  — see tools/delete-wing.tool.ts

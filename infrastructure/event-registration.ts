@@ -20,6 +20,7 @@ import type { CurationUseCase } from "../application/curation.usecase";
 import type { MiningUseCase } from "../application/mining.usecase";
 import type { SkillSyncReport } from "../application/skill-sync.usecase";
 import { syncSkills } from "../application/skill-sync.usecase";
+import { ensureMcp } from "../application/mcp-ownership.usecase";
 import type {
 	readSkillDirState,
 	installSkill,
@@ -43,7 +44,7 @@ export function registerMempalaceEvents(
 		readonly updateSkill: typeof updateSkill;
 	},
 ): void {
-	// ── session_start — reset counter + load wake-up context + sync skills ─────────────
+	// ── session_start — reset counter + load wake-up context + sync skills + ensure MCP ──
 	pi.on("session_start", async (_event, ctx) => {
 		state.reset();
 		// Skip wake-up in print mode — we're a curation subprocess.
@@ -54,6 +55,9 @@ export function registerMempalaceEvents(
 
 		// Sync skills fire-and-forget. Swallow errors.
 		syncSkills(skillInstaller).catch(() => {});
+
+		// Ensure MCP server registration fire-and-forget. Swallow errors.
+		ensureMcp(pi, ctx.cwd, ctx.mode).catch(() => {});
 	});
 
 	// ── Manual sync command ─────────────────────────────────────────────────
@@ -69,6 +73,61 @@ export function registerMempalaceEvents(
 			);
 
 			ctx.ui.notify(`MemPalace skill sync:\n${results.join("\n")}`, "info");
+		},
+	});
+
+	// ── Manual MCP status command ────────────────────────────────────────────
+	pi.registerCommand("mempalace-mcp-status", {
+		description:
+			"Show MCP server status: palace path, binary, configured servers, registration action",
+		handler: async (_args, ctx) => {
+			let report;
+			try {
+				report = await ensureMcp(pi, ctx.cwd, ctx.mode);
+			} catch (e) {
+				ctx.ui.notify(
+					`MemPalace MCP status failed: ${e instanceof Error ? e.message : String(e)}`,
+					"error",
+				);
+				return;
+			}
+
+			const {
+				action,
+				palacePath,
+				palaceSource,
+				binaryPath,
+				configuredServers,
+				adapterAvailable,
+				registered,
+				error,
+			} = report;
+
+			const actionText =
+				action.action === "register"
+					? registered
+						? `REGISTERED: ${action.name}`
+						: `REGISTER FAILED: ${action.name}${error ? ` — ${error}` : ""}`
+					: `SKIPPED: ${action.reason}`;
+
+			const configNames = configuredServers
+				.filter(
+					(s) =>
+						s.name === "mempalace" ||
+						s.command?.includes("mempalace-mcp"),
+				)
+				.map((s) => s.name)
+				.join(", ");
+
+			const lines = [
+				`Palace: ${palacePath} (${palaceSource})`,
+				`Binary: ${binaryPath ?? "not found"}`,
+				`Configured mempalace servers: ${configNames || "none"}`,
+				`Adapter available: ${adapterAvailable ? "yes" : "no"}`,
+				`Action: ${actionText}`,
+			];
+
+			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 
@@ -134,7 +193,6 @@ export function registerMempalaceEvents(
 	});
 
 	// ── session_shutdown (quit only) — persist transcript in background ───────
-	// session_shutdown (quit only) — persist transcript in background.
 	// Fully synchronous: uses cached config + cached bin path so no
 	// pending promises or I/O handles block process exit.
 	pi.on("session_shutdown", (event, ctx) => {
