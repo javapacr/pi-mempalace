@@ -155,7 +155,7 @@ test("happy path → register with exact name, --palace arg, lazy lifecycle", ()
 	assert.equal(plan.action, "register");
 	if (plan.action !== "register") return;
 	assert.equal(plan.name, "pi-mempalace__mempalace");
-	assert.deepEqual(plan.definition.command, "mempalace-mcp");
+	assert.deepEqual(plan.definition.command, "/usr/local/bin/mempalace-mcp");
 	assert.deepEqual(plan.definition.args, ["--palace", "/resolved/palace"]);
 	assert.equal(plan.definition.lifecycle, "lazy");
 	assert.deepEqual(plan.definition.directTools, [
@@ -292,7 +292,7 @@ test("successful registration → registered=true, register called with exact ar
 	assert.equal(report.error, null);
 	assert.equal(stub.calls.length, 1);
 	assert.equal(stub.calls[0].name, "pi-mempalace__mempalace");
-	assert.equal(stub.calls[0].definition.command, "mempalace-mcp");
+	assert.equal(stub.calls[0].definition.command, "/usr/local/bin/mempalace-mcp");
 	assert.deepEqual(stub.calls[0].definition.args, ["--palace", "/resolved/palace"]);
 });
 

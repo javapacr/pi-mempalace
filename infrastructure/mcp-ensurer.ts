@@ -114,16 +114,35 @@ export async function resolveBinary(bin: string): Promise<string | null> {
 
 /**
  * Dynamic import of pi-mcp-adapter with graceful failure. Returns null when
- * the adapter is not installed (e.g. pi runs without the pi-mcp-adapter
- * package).
+ * no usable copy is found.
+ *
+ * Resolution order matters: registerMcpServer consults a WeakMap keyed by
+ * the pi instance that only the copy pi loaded as an extension has
+ * populated. A privately-installed copy (e.g. this repo's own node_modules)
+ * would import fine but always throw "not installed for this Pi instance".
+ * So: try the bare specifier first (correct when pi aliases it or resolution
+ * lands on the shared store), then fall back to the shared npm store copy
+ * (profile npm dir via PI_CODING_AGENT_DIR, then the agent default — both
+ * typically symlink to ~/.pi/agent/npm).
  */
 async function importRegisterMcpServer(): Promise<RegisterMcpServerFn | null> {
-	try {
-		const adapter = await import("pi-mcp-adapter");
-		return adapter.registerMcpServer;
-	} catch {
-		return null;
+	const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+	const candidates = [
+		"pi-mcp-adapter",
+		join(agentDir, "npm", "node_modules", "pi-mcp-adapter", "index.ts"),
+		join(homedir(), ".pi", "agent", "npm", "node_modules", "pi-mcp-adapter", "index.ts"),
+	];
+	for (const spec of candidates) {
+		try {
+			const adapter = await import(spec);
+			if (adapter?.registerMcpServer) {
+				return adapter.registerMcpServer;
+			}
+		} catch {
+			// Try next candidate
+		}
 	}
+	return null;
 }
 
 // ── Report ─────────────────────────────────────────────────────────────────────

@@ -89,12 +89,13 @@ export function planMcpRegistration({
 	// Register with the runtime name and resolved palace. directTools mirrors
 	// the four first-class tools from the former static mcp.json entries so the
 	// gateway keeps offering them as native tools (adapter supports per-server
-	// directTools on the definition).
+	// directTools on the definition). The command is the resolved absolute
+	// binary path so spawning does not depend on the pi process's PATH.
 	return {
 		action: "register",
 		name: "pi-mempalace__mempalace",
 		definition: {
-			command: "mempalace-mcp",
+			command: binaryPath,
 			args: ["--palace", palace],
 			lifecycle: "lazy",
 			directTools: [

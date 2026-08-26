@@ -14,13 +14,18 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "pi-mcp-adapter": "^2.27.0",
     "yaml": "^2.8.3"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
-    "typebox": "*"
+    "typebox": "*",
+    "pi-mcp-adapter": "*"
+  },
+  "peerDependenciesMeta": {
+    "pi-mcp-adapter": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "*",
