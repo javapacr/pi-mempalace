@@ -37,10 +37,7 @@
   },
   "pi": {
     "extensions": [
-      {
-        "entry": "index.ts",
-        "type": "module"
-      }
+      "./index.ts"
     ]
   }
 }
