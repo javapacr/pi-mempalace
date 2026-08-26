@@ -21,8 +21,13 @@ import type {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = join(__filename, "..");
 
-/** Skills managed by this extension. */
-const MANAGED_SKILLS = ["mempalace", "mempalace-recall"] as const;
+/**
+ * Skills managed by this extension — empty since 2026-08-30: skill distribution
+ * moved to ~/.agents (cross-agent skills manager; pi loads them from there via
+ * settings `skills`). Bundled sources remain in ../skills; re-add names here
+ * to resume extension-managed installs.
+ */
+const MANAGED_SKILLS: readonly string[] = [];
 
 export interface SkillSyncResult {
 	readonly skillName: string;
