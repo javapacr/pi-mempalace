@@ -12,7 +12,7 @@
 
 import { access, constants, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, sep } from "node:path";
+import { delimiter, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type {
 	ConfiguredMcpServer,
@@ -97,7 +97,7 @@ export async function resolveBinary(bin: string): Promise<string | null> {
 	const pathEnv = process.env.PATH;
 	if (!pathEnv) return null;
 
-	for (const dir of pathEnv.split(sep)) {
+	for (const dir of pathEnv.split(delimiter)) {
 		const candidate = join(dir, bin);
 		try {
 			await access(candidate, constants.X_OK);

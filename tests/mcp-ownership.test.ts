@@ -13,7 +13,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolvePersonalPalace } from "../domain/palace-default";
@@ -22,6 +22,7 @@ import { resolveMempalaceConfig } from "../domain/palace-router";
 import {
 	readConfiguredMcpServers,
 	ensureMcpRegistration,
+	resolveBinary,
 	type RegisterMcpServerFn,
 	type McpRegistrationHandle,
 } from "../infrastructure/mcp-ensurer";
@@ -333,4 +334,34 @@ test("already-configured server → ensurer skips registration", async () => {
 	// importAdapter IS called to compute adapterAvailable, but registration
 	// must not happen:
 	assert.equal(report.registered, false);
+});
+
+// ── resolveBinary PATH splitting (regression: must split by ":" not "/") ─────
+
+test("resolveBinary honors PATH list delimiter on POSIX", async () => {
+	const dirA = await mkdtemp(join(tmpdir(), "resolvebin-a-"));
+	const dirB = await mkdtemp(join(tmpdir(), "resolvebin-b-"));
+	const binPath = join(dirB, "mempalace-mcp");
+	await writeFile(binPath, "#!/bin/sh\nexit 0\n", "utf8");
+	await chmod(binPath, 0o755);
+
+	const oldPath = process.env.PATH;
+	process.env.PATH = `${dirA}:${dirB}`;
+	try {
+		const found = await resolveBinary("mempalace-mcp");
+		assert.equal(found, binPath);
+	} finally {
+		process.env.PATH = oldPath;
+	}
+});
+
+test("resolveBinary returns null when binary absent from every PATH dir", async () => {
+	const dirA = await mkdtemp(join(tmpdir(), "resolvebin-empty-"));
+	const oldPath = process.env.PATH;
+	process.env.PATH = dirA;
+	try {
+		assert.equal(await resolveBinary("definitely-not-a-real-binary-xyz"), null);
+	} finally {
+		process.env.PATH = oldPath;
+	}
 });
