@@ -157,6 +157,12 @@ test("happy path → register with exact name, --palace arg, lazy lifecycle", ()
 	assert.deepEqual(plan.definition.command, "mempalace-mcp");
 	assert.deepEqual(plan.definition.args, ["--palace", "/resolved/palace"]);
 	assert.equal(plan.definition.lifecycle, "lazy");
+	assert.deepEqual(plan.definition.directTools, [
+		"mempalace_search",
+		"mempalace_diary_write",
+		"mempalace_diary_read",
+		"mempalace_reconnect",
+	]);
 });
 
 // ── resolveMempalaceConfig override plumbing ───────────────────────────────────

@@ -29,6 +29,7 @@ export type McpRegistrationAction =
 				readonly command: string;
 				readonly args: readonly string[];
 				readonly lifecycle: "lazy";
+				readonly directTools: readonly string[];
 			};
 	  };
 
@@ -85,7 +86,10 @@ export function planMcpRegistration({
 		return { action: "skip", reason: "binary-unreachable" };
 	}
 
-	// Register with the runtime name and resolved palace
+	// Register with the runtime name and resolved palace. directTools mirrors
+	// the four first-class tools from the former static mcp.json entries so the
+	// gateway keeps offering them as native tools (adapter supports per-server
+	// directTools on the definition).
 	return {
 		action: "register",
 		name: "pi-mempalace__mempalace",
@@ -93,6 +97,12 @@ export function planMcpRegistration({
 			command: "mempalace-mcp",
 			args: ["--palace", palace],
 			lifecycle: "lazy",
+			directTools: [
+				"mempalace_search",
+				"mempalace_diary_write",
+				"mempalace_diary_read",
+				"mempalace_reconnect",
+			],
 		},
 	};
 }
