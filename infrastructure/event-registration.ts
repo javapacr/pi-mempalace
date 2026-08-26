@@ -137,6 +137,13 @@ export function registerMempalaceEvents(
 
 		const cwd: string =
 			(_ctx as unknown as { cwd: string }).cwd ?? process.cwd();
+
+		// One-shot self-heal retry if wake-up failed at session_start
+		if (!state.wakeUpContext && !state.wakeUpRetried) {
+			state.wakeUpRetried = true;
+			state.wakeUpContext = await wakeUp.execute(cwd);
+		}
+
 		const { snippets, wing, palace } = await recall.execute(event.prompt, cwd);
 
 		const hasRecall = snippets.length > 0;

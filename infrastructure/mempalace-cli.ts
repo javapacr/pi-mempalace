@@ -39,12 +39,12 @@ export class MempalaceCli {
 	}
 
 	/** Run mempalace CLI synchronously (awaited). Throws on non-zero exit. */
-	async run(args: string[], config?: MempalaceConfig): Promise<string> {
+	async run(args: string[], config?: MempalaceConfig, timeoutMs = 15000): Promise<string> {
 		const bin = await this.getBin();
 		const effectiveConfig =
 			config ?? (await resolveMempalaceConfig(process.cwd()));
 		const cliArgs = this.buildArgs(effectiveConfig, args);
-		const { stdout } = await execFileAsync(bin, cliArgs, { timeout: 15000 });
+		const { stdout } = await execFileAsync(bin, cliArgs, { timeout: timeoutMs });
 		return stdout;
 	}
 

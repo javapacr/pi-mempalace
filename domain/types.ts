@@ -50,11 +50,13 @@ export interface SearchResult {
  */
 export class SessionState {
 	wakeUpContext: string | null = null;
+	wakeUpRetried = false;
 	conversationCount = 0;
 	config: MempalaceConfig | null = null;
 
 	reset(): void {
 		this.wakeUpContext = null;
+		this.wakeUpRetried = false;
 		this.conversationCount = 0;
 		this.config = null;
 	}

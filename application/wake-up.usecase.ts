@@ -18,7 +18,7 @@ export class WakeUpUseCase {
 		if (config.wing) args.push("--wing", config.wing);
 
 		try {
-			const out = await this.cli.run(args, config);
+			const out = await this.cli.run(args, config, 60_000);
 			return out.trim() || null;
 		} catch {
 			return null;
