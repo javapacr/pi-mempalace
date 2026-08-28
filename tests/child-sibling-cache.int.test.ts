@@ -177,10 +177,14 @@ async function runOnce(args: string[], env: NodeJS.ProcessEnv): Promise<string> 
 		// stdin MUST be "ignore": an open stdin pipe (execFile's default) makes
 		// `pi --print` wait for EOF forever in non-TTY runs — the root cause
 		// of the original suite stall (parent-verified, 2026-08-28).
+		// stdout is also "ignore": nothing reads it here, and an unread
+		// pipe would block the child once its stdout exceeds the OS pipe
+		// buffer (~64KB), re-creating the stall as a silent SIGKILL (review
+		// follow-up). stderr stays piped and is drained below.
 		const child = spawn(piBin!, args, {
 			cwd: workDir,
 			env,
-			stdio: ["ignore", "pipe", "pipe"],
+			stdio: ["ignore", "ignore", "pipe"],
 			signal: AbortSignal.timeout(90_000),
 		});
 		child.stderr.setEncoding("utf8");
@@ -244,9 +248,10 @@ async function spawnPi(opts: {
 		}
 	};
 
+	let stderr1 = "";
 	let raw = await readProbe().then(async (r) => {
 		if (r !== null) return r;
-		await runOnce(args, env);
+		stderr1 = await runOnce(args, env);
 		return readProbe();
 	});
 	if (raw === null) {
@@ -254,8 +259,13 @@ async function spawnPi(opts: {
 		const stderr2 = await runOnce(args, env);
 		raw = await readProbe();
 		if (raw === null) {
+			// Both runs' stderr reaches the failure message (review follow-up):
+			// discarding run-1's stderr hid the actual first-failure cause.
+			const tail = (s: string) => s.slice(-600).trim() || "(none)";
 			assert.fail(
-				`probe never fired for ${opts.label} — before_agent_start did not run; pi stderr tail: ${stderr2.slice(-600)}`,
+				`probe never fired for ${opts.label} — before_agent_start did not run` +
+				`; pi stderr (run-1): ${tail(stderr1)}` +
+				`; pi stderr (run-2): ${tail(stderr2)}`,
 			);
 		}
 	}

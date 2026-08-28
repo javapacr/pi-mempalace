@@ -130,6 +130,20 @@ npm install
 bun build index.ts --no-bundle
 ```
 
+## Child gate & escape hatch
+
+Subagent children (`PI_SUBAGENT_CHILD=1`, fresh and fork) skip the wake-up
+fetch/append, `syncSkills`, and `ensureMcp` at `session_start` — and the
+`before_agent_start` self-heal retry — while keeping recall
+(`RECALL_CUSTOM_TYPE`) and session-shutdown transcript mining (config
+resolution is intentionally not gated). One-time stderr logs mark the skip
+and any hatch use.
+
+Escape hatch: `PI_MEMPALACE_CHILD_WAKEUP=1` (exact `"1"`, evaluated per
+event) re-enables the gated behavior; `PI_MEMPALACE_CHILD_WAKEUP_AGENTS=<csv>`
+scopes it against `PI_SUBAGENT_CHILD_AGENT` — an empty/absent csv is
+fleet-wide, and the agent must match a trimmed csv token exactly.
+
 ## Known Issues
 
 - **Tools are dormant** — `delete-wing` and `repair-fts5` are implemented but intentionally not registered. Enable manually if needed.
