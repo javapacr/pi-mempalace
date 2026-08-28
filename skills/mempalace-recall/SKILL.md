@@ -1,6 +1,6 @@
 ---
 name: mempalace-recall
-description: "Recall protocol for MemPalace — search the palace before answering about past work, people, projects, or prior decisions. Apply when the user asks what was decided, what happened before, who someone is, what was discussed last time, or anything that may already be filed in their memory palace; or when mempalace-recall is invoked. Complements the mempalace setup skill and requires the mempalace-mcp server."
+description: Recall protocol - search the memory palace before answering about past work, decisions, people.
 ---
 
 # MemPalace Recall

@@ -1,6 +1,6 @@
 ---
 name: mempalace
-description: MemPalace — mine projects and conversations into a searchable memory palace. Use when the user asks about MemPalace, memory palace, mining memories, searching memories, palace setup, wings, rooms, or drawers; or when they want to recall past work that may already be filed in their palace.
+description: Mine projects and conversations into a searchable memory palace; manage wings, rooms, drawers.
 ---
 
 # MemPalace
