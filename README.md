@@ -43,8 +43,8 @@ index.ts                          # Entry — wires up use cases + event registr
 
 | Event                        | Description                                                         |
 | ---------------------------- | ------------------------------------------------------------------- |
-| `session_start`              | Load wake-up context (L0+L1 ~940 tokens) into system prompt; reset conversation counter |
-| `before_agent_start`         | Recall per-prompt memories and inject into system prompt            |
+| `session_start`              | Load wake-up context (L0+L1 ~940 tokens) into system prompt; reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies |
+| `before_agent_start`         | Recall per-prompt memories and inject into system prompt (wake-up self-heal also gated for subagent children) |
 | `agent_end`                  | Every 15 exchanges, dispatch a worker subagent for curation         |
 | `session_before_compact`     | Mine the session transcript before summarisation                    |
 | `session_shutdown`           | Background mine on quit                                             |

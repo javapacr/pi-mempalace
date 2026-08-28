@@ -53,11 +53,16 @@ export class SessionState {
 	wakeUpRetried = false;
 	conversationCount = 0;
 	config: MempalaceConfig | null = null;
+	/** One-shot child-gate log flags (PRD §4 A3/A6) — one line per session. */
+	gateSkipLogged = false;
+	hatchLogged = false;
 
 	reset(): void {
 		this.wakeUpContext = null;
 		this.wakeUpRetried = false;
 		this.conversationCount = 0;
 		this.config = null;
+		this.gateSkipLogged = false;
+		this.hatchLogged = false;
 	}
 }

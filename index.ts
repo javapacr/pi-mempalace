@@ -10,9 +10,13 @@
  * Active features (lifecycle hooks):
  * - session_start        — load wake-up context (L0+L1 ~940 tokens) into the
  *                          system prompt; reset conversation counter; sync
- *                          skills; ensure MCP server registration
+ *                          skills; ensure MCP server registration —
+ *                          all three SKIPPED for subagent children
+ *                          (PI_SUBAGENT_CHILD=1) unless the
+ *                          PI_MEMPALACE_CHILD_WAKEUP escape hatch applies
  * - before_agent_start   — recall per-prompt memories and inject them into
- *                          the system prompt
+ *                          the system prompt; self-heal wake-up retry also
+ *                          gated for subagent children
  * - agent_end            — every SAVE_INTERVAL (15) exchanges, dispatch a
  *                          worker subagent for diary/drawer/KG curation
  * - session_before_compact — mine the session transcript before it is

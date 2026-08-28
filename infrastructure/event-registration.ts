@@ -13,6 +13,7 @@ import {
 	type SessionState,
 } from "../domain/types";
 import { resolveMempalaceConfig } from "../domain/palace-router";
+import { resolveChildWakeupGate } from "../domain/child-gate";
 import { formatRecallContext } from "../domain/recall-parser";
 import type { WakeUpUseCase } from "../application/wake-up.usecase";
 import type { RecallUseCase } from "../application/recall.usecase";
@@ -28,6 +29,26 @@ import type {
 	replaceFileWithDir,
 	updateSkill,
 } from "../infrastructure/skill-installer";
+
+// ── Child-gate observability (PRD §4 A3/A6) ─────────────────────────────────
+// One line each per session (flags live on SessionState) — children are
+// short-lived processes; the logs make a broken PI_SUBAGENT_CHILD upstream
+// contract (or a stray hatch) visible instead of silent.
+function logGateSkipOnce(state: SessionState, reason: string): void {
+	if (state.gateSkipLogged) return;
+	state.gateSkipLogged = true;
+	console.error(
+		`MemPalace: child gate active — wake-up, skill sync, and MCP ensure skipped for subagent child (PI_SUBAGENT_CHILD=1, reason: ${reason})`,
+	);
+}
+
+function logHatchOnce(state: SessionState, reason: string): void {
+	if (state.hatchLogged) return;
+	state.hatchLogged = true;
+	console.error(
+		`MemPalace: child wake-up hatch active (PI_MEMPALACE_CHILD_WAKEUP=1, reason: ${reason}) — wake-up NOT gated for this child`,
+	);
+}
 
 export function registerMempalaceEvents(
 	pi: ExtensionAPI,
@@ -49,8 +70,21 @@ export function registerMempalaceEvents(
 		state.reset();
 		// Skip wake-up in print mode — we're a curation subprocess.
 		if (ctx.mode === "print") return;
-		// Pre-warm config so session_shutdown can spawn synchronously.
+		// Pre-warm config so session_shutdown can spawn synchronously. Resolved
+		// BEFORE the child gate: children still mine their transcripts at
+		// shutdown and need the palace config (PRD §4 A1 — over-gating here
+		// would silently kill child persistence).
 		state.config = await resolveMempalaceConfig(ctx.cwd);
+
+		// Subagent children skip wake-up/sync/MCP side effects (PRD §4 A1).
+		// Evaluated per-event, never factory-frozen (PRD A3).
+		const gate = resolveChildWakeupGate(process.env);
+		if (gate.skipWakeUp) {
+			logGateSkipOnce(state, gate.reason);
+			return;
+		}
+		if (gate.hatchUsed) logHatchOnce(state, gate.reason);
+
 		state.wakeUpContext = await wakeUp.execute(ctx.cwd);
 
 		// Sync skills fire-and-forget. Swallow errors.
@@ -138,9 +172,16 @@ export function registerMempalaceEvents(
 		const cwd: string =
 			(_ctx as unknown as { cwd: string }).cwd ?? process.cwd();
 
-		// One-shot self-heal retry if wake-up failed at session_start
-		if (!state.wakeUpContext && !state.wakeUpRetried) {
+		// One-shot self-heal retry if wake-up failed at session_start.
+		// Gated per-event for subagent children (PRD §4 A1) — print-mode
+		// children reach wake-up exactly through this path, and the hatch is
+		// re-evaluated at every event (PRD A3).
+		const gate = resolveChildWakeupGate(process.env);
+		if (gate.skipWakeUp) {
+			logGateSkipOnce(state, gate.reason);
+		} else if (!state.wakeUpContext && !state.wakeUpRetried) {
 			state.wakeUpRetried = true;
+			if (gate.hatchUsed) logHatchOnce(state, gate.reason);
 			state.wakeUpContext = await wakeUp.execute(cwd);
 		}
 
