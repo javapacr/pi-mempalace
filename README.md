@@ -47,7 +47,7 @@ index.ts                          # Entry — wires up use cases + event registr
 | `before_agent_start`         | Recall per-prompt memories and inject into system prompt (wake-up self-heal also gated for subagent children) |
 | `agent_end`                  | Every 15 exchanges, dispatch a worker subagent for curation         |
 | `session_before_compact`     | Mine the session transcript before summarisation                    |
-| `session_shutdown`           | Background mine on quit                                             |
+| `session_shutdown`           | Background mine on quit and session replacement (new/resume/fork; not reload) |
 
 ## Dormant Maintenance Tools
 

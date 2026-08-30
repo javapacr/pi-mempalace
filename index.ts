@@ -21,7 +21,9 @@
  *                          worker subagent for diary/drawer/KG curation
  * - session_before_compact — mine the session transcript before it is
  *                          summarised, preserving verbatim text in MemPalace
- * - session_shutdown     — background mine on quit
+ * - session_shutdown     — background mine on quit and on session
+ *                          replacement (new/resume/fork; not reload —
+ *                          that session continues and is mined at quit)
  *
  * Manual commands:
  * - /mempalace-skills-sync  — force skill sync

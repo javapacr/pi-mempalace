@@ -240,11 +240,19 @@ export function registerMempalaceEvents(
 		await mining.mineSync(dirname(sessionFile), ctx.cwd);
 	});
 
-	// ── session_shutdown (quit only) — persist transcript in background ───────
+	// ── session_shutdown — persist transcript in background ──────────────────
+	// Mines on quit AND session-replacement teardowns (new/resume/fork): the
+	// outgoing runtime never fires quit again, so its transcript would go
+	// unmined until a future session in the same dir compacts or quits.
+	// `reload` is skipped: the same session continues (mined at quit), and
+	// skipping avoids redundant spawns during extension-dev reloads.
+	// Idempotent by contract: `mempalace mine` skips already-mined files via
+	// mtime + content-hash dedup (file_already_mined, convo_miner.py) — if
+	// upstream ever changes that, this fires redundant mines per switch.
 	// Fully synchronous: uses cached config + cached bin path so no
 	// pending promises or I/O handles block process exit.
 	pi.on("session_shutdown", (event, ctx) => {
-		if (event.reason !== "quit") return;
+		if (event.reason === "reload") return;
 		if (!state.config) return;
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (!sessionFile) return;

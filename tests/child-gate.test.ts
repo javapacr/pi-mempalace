@@ -182,10 +182,12 @@ interface Harness {
 	handlers: Map<string, Handler[]>;
 	wakeUpCalls: string[];
 	installerCalls: string[];
+	mineBackgroundCalls: string[];
 	recallHits: SearchResult;
 	setEnv(env: Record<string, string | undefined>): void;
 	driveSessionStart(mode?: string): Promise<void>;
 	driveTurn(prompt?: string): Promise<Record<string, unknown> | undefined>;
+	driveShutdown(reason: string, sessionFile: string | null): void;
 }
 
 const GATE_ENV_KEYS = [
@@ -205,6 +207,7 @@ function buildHarness(recallHits: SearchResult): Harness {
 	const handlers = new Map<string, Handler[]>();
 	const wakeUpCalls: string[] = [];
 	const installerCalls: string[] = [];
+	const mineBackgroundCalls: string[] = [];
 
 	const pi = {
 		on: (name: string, fn: Handler) => {
@@ -228,7 +231,12 @@ function buildHarness(recallHits: SearchResult): Harness {
 	} as unknown as RecallUseCase;
 
 	const curation = { buildPrompt: async () => ({ prompt: "x" }) } as unknown as CurationUseCase;
-	const mining = { mineSync: async () => {}, mineBackground: () => {} } as unknown as MiningUseCase;
+	const mining = {
+		mineSync: async () => {},
+		mineBackground: (dir: string) => {
+			mineBackgroundCalls.push(dir);
+		},
+	} as unknown as MiningUseCase;
 
 	// Recording installer stub: any touch is recorded and throws, so an
 	// accidental skill-sync call is both visible and harmless (syncSkills
@@ -256,6 +264,7 @@ function buildHarness(recallHits: SearchResult): Harness {
 		handlers,
 		wakeUpCalls,
 		installerCalls,
+		mineBackgroundCalls,
 		recallHits,
 		setEnv: (env) => {
 			for (const [k, v] of Object.entries(env)) {
@@ -280,6 +289,16 @@ function buildHarness(recallHits: SearchResult): Harness {
 				if (r && typeof r === "object") last = r as Record<string, unknown>;
 			}
 			return last;
+		},
+		driveShutdown: (reason: string, sessionFile: string | null) => {
+			const fns = handlers.get("session_shutdown") ?? [];
+			assert.ok(fns.length > 0, "session_shutdown handler registered");
+			for (const fn of fns) {
+				fn(
+					{ type: "session_shutdown", reason },
+					{ ...ctxBase(), sessionManager: { getSessionFile: () => sessionFile } },
+				);
+			}
 		},
 	};
 }
@@ -465,5 +484,82 @@ describe("one-time gate logs (A6/A3)", () => {
 		}
 		const hatches = errors.filter((l) => l.includes("MemPalace: child wake-up hatch active"));
 		assert.equal(hatches.length, 1, "exactly one hatch log line");
+	});
+});
+
+// ── session_shutdown mining: quit + session replacement, never reload ───────
+
+describe("session_shutdown mining (quit + session replacement, never reload)", () => {
+	const minedSessionFile = () => join(scratch, "sessions", "outgoing.jsonl");
+
+	it("mines the outgoing session dir on quit, new, resume, and fork", async () => {
+		for (const reason of ["quit", "new", "resume", "fork"]) {
+			const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+			h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+			await h.driveSessionStart();
+
+			h.driveShutdown(reason, minedSessionFile());
+
+			assert.deepEqual(
+				h.mineBackgroundCalls,
+				[join(scratch, "sessions")],
+				`reason=${reason} must mine dirname(sessionFile) in the background`,
+			);
+		}
+	});
+
+	it("never mines on reload (the same session continues)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart();
+
+		h.driveShutdown("reload", minedSessionFile());
+
+		assert.equal(h.mineBackgroundCalls.length, 0, "reload must not spawn a mine");
+	});
+
+	it("mining still works in a gated child (config pre-warm survives the gate, A1)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" });
+		await h.driveSessionStart();
+
+		h.driveShutdown("new", minedSessionFile());
+
+		assert.deepEqual(h.mineBackgroundCalls, [join(scratch, "sessions")]);
+	});
+
+	it("skips when palace config never resolved (no session_start)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		assert.equal(h.state.config, null, "precondition: config unresolved");
+
+		h.driveShutdown("quit", minedSessionFile());
+
+		assert.equal(h.mineBackgroundCalls.length, 0, "no config → no spawn");
+	});
+
+	it("skips when there is no session file", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart();
+
+		h.driveShutdown("quit", null);
+
+		assert.equal(h.mineBackgroundCalls.length, 0, "no session file → no spawn");
+	});
+
+	it("same-manager fork flip: mining the (already-switched) branched path still covers the outgoing session dir", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart();
+
+		// createBranchedSession can swap ctx.sessionManager BEFORE teardown, so
+		// getSessionFile() at handler time may already be the NEW branched file.
+		// Safe: mining is directory-granular (dirname(sessionFile)); the branched
+		// file is in the SAME sessions dir as the outgoing parent file, and the
+		// mine sweeps unmined files in that dir — so the outgoing parent is swept.
+		h.driveShutdown("fork", join(scratch, "sessions", "branched.jsonl"));
+
+		assert.deepEqual(h.mineBackgroundCalls, [join(scratch, "sessions")]);
 	});
 });

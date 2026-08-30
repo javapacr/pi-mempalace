@@ -28,7 +28,8 @@ export class MiningUseCase {
 	}
 
 	/**
-	 * Background mine — fire-and-forget. Used on quit.
+	 * Background mine — fire-and-forget. Used on quit and on session-replacement
+	 * teardowns (new/resume/fork); reload is skipped (same session continues).
 	 *
 	 * Takes a pre-resolved config so the shutdown path is fully
 	 * synchronous: no file reads, no promises, no lingering handles.
