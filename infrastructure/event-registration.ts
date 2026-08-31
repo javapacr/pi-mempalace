@@ -5,7 +5,6 @@
  * appropriate use case and maps the result back to pi's return shape.
  */
 
-import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	SAVE_INTERVAL,
@@ -68,6 +67,13 @@ export function registerMempalaceEvents(
 	// ── session_start — reset counter + load wake-up context + sync skills + ensure MCP ──
 	pi.on("session_start", async (_event, ctx) => {
 		state.reset();
+		// Capture this runtime's transcript file BEFORE any early return —
+		// child sessions mine their transcripts at shutdown (config is
+		// pre-warmed below regardless of the gate) and shutdown mining is
+		// file-granular, targeting this capture. Print-mode sessions never
+		// mine (they return before config resolution), but capture is cheap
+		// and keeps the invariant: one capture site, before any branch.
+		state.sessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		// Skip wake-up in print mode — we're a curation subprocess.
 		if (ctx.mode === "print") return;
 		// Pre-warm config so session_shutdown can spawn synchronously. Resolved
@@ -213,8 +219,14 @@ export function registerMempalaceEvents(
 	// ── agent_end — periodic LLM curation every SAVE_INTERVAL exchanges ──────
 	pi.on("agent_end", async (_event, ctx) => {
 		state.conversationCount++;
+		// Keep the transcript capture current — shutdown mines it. Refreshing
+		// here tracks a file that changed without a fresh session_start capture
+		// (e.g. a same-manager branch swap before teardown); without this
+		// refresh, shutdown mining would target a stale path in those flows.
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		if (sessionFile) state.sessionFile = sessionFile;
 		if (state.conversationCount % SAVE_INTERVAL !== 0) return;
-		if (!ctx.sessionManager.getSessionFile()) return;
+		if (!sessionFile) return;
 
 		const { prompt } = await curation.buildPrompt(
 			ctx.cwd,
@@ -234,18 +246,29 @@ export function registerMempalaceEvents(
 	});
 
 	// ── session_before_compact — mine transcript before it is summarised ──────
+	// File-granular: mine this runtime's captured transcript, not the whole
+	// sessions dir (the CLI accepts one conversation file with --mode convos).
 	pi.on("session_before_compact", async (_event, ctx) => {
-		const sessionFile = ctx.sessionManager.getSessionFile();
+		const sessionFile = state.sessionFile ?? ctx.sessionManager.getSessionFile();
 		if (!sessionFile) return;
-		await mining.mineSync(dirname(sessionFile), ctx.cwd);
+		await mining.mineSync(sessionFile, ctx.cwd);
 	});
 
 	// ── session_shutdown — persist transcript in background ──────────────────
 	// Mines on quit AND session-replacement teardowns (new/resume/fork): the
 	// outgoing runtime never fires quit again, so its transcript would go
-	// unmined until a future session in the same dir compacts or quits.
-	// `reload` is skipped: the same session continues (mined at quit), and
-	// skipping avoids redundant spawns during extension-dev reloads.
+	// unmined. `reload` is skipped: the same session continues (mined at
+	// quit), and skipping avoids redundant spawns during extension-dev reloads.
+	// File-granular: mines THIS runtime's captured transcript file (CLI
+	// accepts one conversation file with --mode convos) instead of sweeping
+	// the sessions dir — subagent children mine their own transcripts at
+	// their own shutdown (PRD §4 A1). The state capture is mined, not the
+	// live getter: a same-manager fork flip can swap the session manager
+	// before teardown, so the getter may already expose the branched file.
+	// Accepted corner: with a null capture (getter falsy at session_start and
+	// no agent_end turn) while a flip swapped in the branched file, the
+	// fallback resolves to the branched file and the outgoing transcript goes
+	// unmined — same accepted class as crashed-session loss.
 	// Idempotent by contract: `mempalace mine` skips already-mined files via
 	// mtime + content-hash dedup (file_already_mined, convo_miner.py) — if
 	// upstream ever changes that, this fires redundant mines per switch.
@@ -254,8 +277,8 @@ export function registerMempalaceEvents(
 	pi.on("session_shutdown", (event, ctx) => {
 		if (event.reason === "reload") return;
 		if (!state.config) return;
-		const sessionFile = ctx.sessionManager.getSessionFile();
+		const sessionFile = state.sessionFile ?? ctx.sessionManager.getSessionFile();
 		if (!sessionFile) return;
-		mining.mineBackground(dirname(sessionFile), state.config);
+		mining.mineBackground(sessionFile, state.config);
 	});
 }

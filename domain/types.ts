@@ -53,6 +53,14 @@ export class SessionState {
 	wakeUpRetried = false;
 	conversationCount = 0;
 	config: MempalaceConfig | null = null;
+	/**
+	 * Transcript file captured for THIS runtime (session_start/agent_end).
+	 * Shutdown and compaction mining target this capture, not the live
+	 * getSessionFile(): a same-manager fork flip can swap the session manager
+	 * before the outgoing teardown runs, so the live getter may already expose
+	 * the NEW branched file.
+	 */
+	sessionFile: string | null = null;
 	/** One-shot child-gate log flags (PRD §4 A3/A6) — one line per session. */
 	gateSkipLogged = false;
 	hatchLogged = false;
@@ -62,6 +70,7 @@ export class SessionState {
 		this.wakeUpRetried = false;
 		this.conversationCount = 0;
 		this.config = null;
+		this.sessionFile = null;
 		this.gateSkipLogged = false;
 		this.hatchLogged = false;
 	}

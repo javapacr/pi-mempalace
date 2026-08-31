@@ -1,6 +1,11 @@
 /**
  * MiningUseCase — mines session transcripts into MemPalace.
  *
+ * File-granular: each call mines ONE session transcript file (the CLI
+ * positional accepts a directory or, with --mode convos, a single
+ * conversation file). Every session mines its own transcript; subagent
+ * children mine theirs at their own shutdown.
+ *
  * Two modes:
  *  - mineSync:       awaited, used before compaction so verbatim text is
  *                    preserved before the session is summarised.
@@ -15,11 +20,11 @@ export class MiningUseCase {
 	constructor(private readonly cli: MempalaceCli) {}
 
 	/** Synchronous mine — awaits completion. Non-fatal on failure. */
-	async mineSync(dir: string, cwd: string): Promise<void> {
+	async mineSync(sessionFile: string, cwd: string): Promise<void> {
 		const config = await resolveMempalaceConfig(cwd);
 		try {
 			await this.cli.run(
-				["mine", dir, "--mode", "convos", "--wing", "sessions"],
+				["mine", sessionFile, "--mode", "convos", "--wing", "sessions"],
 				config,
 			);
 		} catch {
@@ -34,9 +39,9 @@ export class MiningUseCase {
 	 * Takes a pre-resolved config so the shutdown path is fully
 	 * synchronous: no file reads, no promises, no lingering handles.
 	 */
-	mineBackground(dir: string, config: MempalaceConfig): void {
+	mineBackground(sessionFile: string, config: MempalaceConfig): void {
 		this.cli.spawnBackground(
-			["mine", dir, "--mode", "convos", "--wing", "sessions"],
+			["mine", sessionFile, "--mode", "convos", "--wing", "sessions"],
 			config,
 		);
 	}

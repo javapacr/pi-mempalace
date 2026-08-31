@@ -182,12 +182,15 @@ interface Harness {
 	handlers: Map<string, Handler[]>;
 	wakeUpCalls: string[];
 	installerCalls: string[];
+	mineSyncCalls: string[];
 	mineBackgroundCalls: string[];
 	recallHits: SearchResult;
 	setEnv(env: Record<string, string | undefined>): void;
-	driveSessionStart(mode?: string): Promise<void>;
+	driveSessionStart(mode?: string, sessionFile?: string | null): Promise<void>;
 	driveTurn(prompt?: string): Promise<Record<string, unknown> | undefined>;
-	driveShutdown(reason: string, sessionFile: string | null): void;
+	driveBeforeCompact(sessionFile: string | null): Promise<void>;
+	driveAgentEnd(sessionFile: string | null): Promise<void>;
+	driveShutdown(reason: string, sessionFile: string | null): Promise<void>;
 }
 
 const GATE_ENV_KEYS = [
@@ -207,6 +210,7 @@ function buildHarness(recallHits: SearchResult): Harness {
 	const handlers = new Map<string, Handler[]>();
 	const wakeUpCalls: string[] = [];
 	const installerCalls: string[] = [];
+	const mineSyncCalls: string[] = [];
 	const mineBackgroundCalls: string[] = [];
 
 	const pi = {
@@ -232,9 +236,11 @@ function buildHarness(recallHits: SearchResult): Harness {
 
 	const curation = { buildPrompt: async () => ({ prompt: "x" }) } as unknown as CurationUseCase;
 	const mining = {
-		mineSync: async () => {},
-		mineBackground: (dir: string) => {
-			mineBackgroundCalls.push(dir);
+		mineSync: async (sessionFile: string) => {
+			mineSyncCalls.push(sessionFile);
+		},
+		mineBackground: (sessionFile: string) => {
+			mineBackgroundCalls.push(sessionFile);
 		},
 	} as unknown as MiningUseCase;
 
@@ -264,6 +270,7 @@ function buildHarness(recallHits: SearchResult): Harness {
 		handlers,
 		wakeUpCalls,
 		installerCalls,
+		mineSyncCalls,
 		mineBackgroundCalls,
 		recallHits,
 		setEnv: (env) => {
@@ -272,10 +279,18 @@ function buildHarness(recallHits: SearchResult): Harness {
 				else process.env[k] = v;
 			}
 		},
-		driveSessionStart: async (mode = "interactive") => {
+		driveSessionStart: async (
+			mode = "interactive",
+			sessionFile: string | null = null,
+		) => {
 			const fns = handlers.get("session_start") ?? [];
 			assert.ok(fns.length > 0, "session_start handler registered");
-			for (const fn of fns) await fn({}, { ...ctxBase(), mode });
+			for (const fn of fns)
+				await fn({}, {
+					...ctxBase(),
+					mode,
+					sessionManager: { getSessionFile: () => sessionFile },
+				});
 		},
 		driveTurn: async (prompt = "please remember the palindrome drawer for this task") => {
 			const fns = handlers.get("before_agent_start") ?? [];
@@ -290,11 +305,31 @@ function buildHarness(recallHits: SearchResult): Harness {
 			}
 			return last;
 		},
-		driveShutdown: (reason: string, sessionFile: string | null) => {
+		driveBeforeCompact: async (sessionFile: string | null) => {
+			const fns = handlers.get("session_before_compact") ?? [];
+			assert.ok(fns.length > 0, "session_before_compact handler registered");
+			for (const fn of fns) {
+				await fn(
+					{ type: "session_before_compact" },
+					{ ...ctxBase(), sessionManager: { getSessionFile: () => sessionFile } },
+				);
+			}
+		},
+		driveAgentEnd: async (sessionFile: string | null) => {
+			const fns = handlers.get("agent_end") ?? [];
+			assert.ok(fns.length > 0, "agent_end handler registered");
+			for (const fn of fns) {
+				await fn(
+					{ type: "agent_end" },
+					{ ...ctxBase(), sessionManager: { getSessionFile: () => sessionFile } },
+				);
+			}
+		},
+		driveShutdown: async (reason: string, sessionFile: string | null) => {
 			const fns = handlers.get("session_shutdown") ?? [];
 			assert.ok(fns.length > 0, "session_shutdown handler registered");
 			for (const fn of fns) {
-				fn(
+				await fn(
 					{ type: "session_shutdown", reason },
 					{ ...ctxBase(), sessionManager: { getSessionFile: () => sessionFile } },
 				);
@@ -492,20 +527,34 @@ describe("one-time gate logs (A6/A3)", () => {
 describe("session_shutdown mining (quit + session replacement, never reload)", () => {
 	const minedSessionFile = () => join(scratch, "sessions", "outgoing.jsonl");
 
-	it("mines the outgoing session dir on quit, new, resume, and fork", async () => {
+	it("mines the captured transcript file on quit, new, resume, and fork", async () => {
 		for (const reason of ["quit", "new", "resume", "fork"]) {
 			const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
 			h.setEnv({ PI_SUBAGENT_CHILD: undefined });
-			await h.driveSessionStart();
+			await h.driveSessionStart("interactive", minedSessionFile());
 
-			h.driveShutdown(reason, minedSessionFile());
+			await h.driveShutdown(reason, minedSessionFile());
 
 			assert.deepEqual(
 				h.mineBackgroundCalls,
-				[join(scratch, "sessions")],
-				`reason=${reason} must mine dirname(sessionFile) in the background`,
+				[minedSessionFile()],
+				`reason=${reason} must mine the session file in the background`,
 			);
 		}
+	});
+
+	it("falls back to the live getter when nothing was captured", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart(); // capture stays null (getter null at start)
+
+		await h.driveShutdown("quit", minedSessionFile());
+
+		assert.deepEqual(
+			h.mineBackgroundCalls,
+			[minedSessionFile()],
+			"null capture must fall back to the sessionManager getter",
+		);
 	});
 
 	it("never mines on reload (the same session continues)", async () => {
@@ -513,7 +562,7 @@ describe("session_shutdown mining (quit + session replacement, never reload)", (
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
 		await h.driveSessionStart();
 
-		h.driveShutdown("reload", minedSessionFile());
+		await h.driveShutdown("reload", minedSessionFile());
 
 		assert.equal(h.mineBackgroundCalls.length, 0, "reload must not spawn a mine");
 	});
@@ -521,11 +570,11 @@ describe("session_shutdown mining (quit + session replacement, never reload)", (
 	it("mining still works in a gated child (config pre-warm survives the gate, A1)", async () => {
 		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
 		h.setEnv({ PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" });
-		await h.driveSessionStart();
+		await h.driveSessionStart("interactive", minedSessionFile());
 
-		h.driveShutdown("new", minedSessionFile());
+		await h.driveShutdown("new", minedSessionFile());
 
-		assert.deepEqual(h.mineBackgroundCalls, [join(scratch, "sessions")]);
+		assert.deepEqual(h.mineBackgroundCalls, [minedSessionFile()]);
 	});
 
 	it("skips when palace config never resolved (no session_start)", async () => {
@@ -533,7 +582,7 @@ describe("session_shutdown mining (quit + session replacement, never reload)", (
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
 		assert.equal(h.state.config, null, "precondition: config unresolved");
 
-		h.driveShutdown("quit", minedSessionFile());
+		await h.driveShutdown("quit", minedSessionFile());
 
 		assert.equal(h.mineBackgroundCalls.length, 0, "no config → no spawn");
 	});
@@ -543,23 +592,128 @@ describe("session_shutdown mining (quit + session replacement, never reload)", (
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
 		await h.driveSessionStart();
 
-		h.driveShutdown("quit", null);
+		await h.driveShutdown("quit", null);
 
 		assert.equal(h.mineBackgroundCalls.length, 0, "no session file → no spawn");
 	});
 
-	it("same-manager fork flip: mining the (already-switched) branched path still covers the outgoing session dir", async () => {
+	it("same-manager fork flip: the state-captured outgoing file is mined, not the branched path", async () => {
 		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
-		await h.driveSessionStart();
+		await h.driveSessionStart("interactive", minedSessionFile());
 
 		// createBranchedSession can swap ctx.sessionManager BEFORE teardown, so
 		// getSessionFile() at handler time may already be the NEW branched file.
-		// Safe: mining is directory-granular (dirname(sessionFile)); the branched
-		// file is in the SAME sessions dir as the outgoing parent file, and the
-		// mine sweeps unmined files in that dir — so the outgoing parent is swept.
-		h.driveShutdown("fork", join(scratch, "sessions", "branched.jsonl"));
+		// File-granular mining therefore targets the file captured on state at
+		// session_start (the outgoing transcript) and only falls back to the
+		// live getter when nothing was captured — the flip cannot redirect the
+		// mine at the branched file.
+		await h.driveShutdown("fork", join(scratch, "sessions", "branched.jsonl"));
 
-		assert.deepEqual(h.mineBackgroundCalls, [join(scratch, "sessions")]);
+		assert.deepEqual(h.mineBackgroundCalls, [minedSessionFile()]);
+	});
+});
+
+// ── session_before_compact mining: file-granular, awaited ────────────
+
+describe("session_before_compact mining", () => {
+	const minedSessionFile = () => join(scratch, "sessions", "outgoing.jsonl");
+
+	it("mines the state-captured file synchronously on session_before_compact", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart("interactive", minedSessionFile());
+
+		await h.driveBeforeCompact(minedSessionFile());
+
+		assert.deepEqual(h.mineSyncCalls, [minedSessionFile()]);
+	});
+
+	it("falls back to the live getter on compact when nothing was captured", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart(); // capture stays null
+
+		await h.driveBeforeCompact(minedSessionFile());
+
+		assert.deepEqual(h.mineSyncCalls, [minedSessionFile()]);
+	});
+
+	it("capture takes precedence over the live getter on compact", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart("interactive", minedSessionFile());
+
+		// Null getter (e.g. manager swapped/none) must not override the capture.
+		await h.driveBeforeCompact(null);
+
+		assert.deepEqual(h.mineSyncCalls, [minedSessionFile()]);
+	});
+});
+
+// ── agent_end capture refresh: keeps shutdown mining on the live file ───────
+
+describe("agent_end transcript capture refresh", () => {
+	const fileA = () => join(scratch, "sessions", "a.jsonl");
+	const fileB = () => join(scratch, "sessions", "b.jsonl");
+
+	it("refreshes the capture to the current file and shutdown mines it", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart("interactive", fileA());
+
+		await h.driveAgentEnd(fileB());
+		assert.equal(h.state.sessionFile, fileB(), "capture must follow agent_end");
+
+		await h.driveShutdown("quit", fileB());
+		assert.deepEqual(h.mineBackgroundCalls, [fileB()]);
+	});
+
+	it("keeps the prior capture when agent_end sees no session file", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart("interactive", fileA());
+
+		await h.driveAgentEnd(null);
+
+		assert.equal(
+			h.state.sessionFile,
+			fileA(),
+			"null getter must not clear the capture",
+		);
+	});
+});
+
+// ── session_start capture pins: print mode + reset ──────────────────────────
+
+describe("session_start capture pins", () => {
+	it("captures the transcript file in print mode (before the early return)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		const f = join(scratch, "sessions", "print.jsonl");
+
+		await h.driveSessionStart("print", f);
+
+		assert.equal(h.state.sessionFile, f, "capture precedes the print return");
+		// Print mode returns before config pre-warm: no palace config, so these
+		// sessions never mine at shutdown (documented accepted trade).
+		assert.equal(h.state.config, null);
+	});
+
+	it("reset() replaces a stale capture between starts on shared state", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		const a = join(scratch, "sessions", "a.jsonl");
+		const b = join(scratch, "sessions", "b.jsonl");
+
+		await h.driveSessionStart("interactive", a);
+		assert.equal(h.state.sessionFile, a);
+
+		await h.driveSessionStart("interactive", b);
+		assert.equal(
+			h.state.sessionFile,
+			b,
+			"second start must replace, not keep, the capture",
+		);
 	});
 });
