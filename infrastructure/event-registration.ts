@@ -68,19 +68,23 @@ export function registerMempalaceEvents(
 	pi.on("session_start", async (_event, ctx) => {
 		state.reset();
 		// Capture this runtime's transcript file BEFORE any early return —
-		// child sessions mine their transcripts at shutdown (config is
-		// pre-warmed below regardless of the gate) and shutdown mining is
-		// file-granular, targeting this capture. Print-mode sessions never
-		// mine (they return before config resolution), but capture is cheap
-		// and keeps the invariant: one capture site, before any branch.
+		// every session mines its own transcript at shutdown (file-granular,
+		// targeting this capture), so the capture must exist on all paths.
 		state.sessionFile = ctx.sessionManager.getSessionFile() ?? null;
-		// Skip wake-up in print mode — we're a curation subprocess.
-		if (ctx.mode === "print") return;
-		// Pre-warm config so session_shutdown can spawn synchronously. Resolved
-		// BEFORE the child gate: children still mine their transcripts at
-		// shutdown and need the palace config (PRD §4 A1 — over-gating here
-		// would silently kill child persistence).
+		// Pre-warm config so session_shutdown can spawn synchronously — for
+		// ALL sessions including print-mode one-shots (`pi -p`). Resolved
+		// BEFORE the child gate and the print return: children and print
+		// one-shots still mine their transcripts at shutdown and need the
+		// palace config (PRD §4 A1 — over-gating here would silently kill
+		// persistence). Config resolution is cheap (env/settings reads),
+		// unlike the wake-up palace scan further below.
 		state.config = await resolveMempalaceConfig(ctx.cwd);
+		// Print mode (plain `pi -p` one-shots) skips wake-up, skill sync, and
+		// MCP registration — a text-print run only needs its transcript mined
+		// at shutdown, which the pre-warmed config above enables. Curation
+		// subagents are json-mode children, not print sessions, so they never
+		// hit this return.
+		if (ctx.mode === "print") return;
 
 		// Subagent children skip wake-up/sync/MCP side effects (PRD §4 A1).
 		// Evaluated per-event, never factory-frozen (PRD A3).

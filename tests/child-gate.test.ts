@@ -397,6 +397,7 @@ describe("session gating (AC-A5, A1 pins)", () => {
 
 		await h.driveSessionStart("print");
 		assert.equal(h.wakeUpCalls.length, 0, "print-mode session_start skips the fetch");
+		assert.ok(h.state.config, "print-mode start still pre-warms the palace config");
 		await h.driveTurn();
 		assert.equal(h.wakeUpCalls.length, 1, "self-heal still fetches once for a print-mode parent");
 	});
@@ -695,9 +696,20 @@ describe("session_start capture pins", () => {
 		await h.driveSessionStart("print", f);
 
 		assert.equal(h.state.sessionFile, f, "capture precedes the print return");
-		// Print mode returns before config pre-warm: no palace config, so these
-		// sessions never mine at shutdown (documented accepted trade).
-		assert.equal(h.state.config, null);
+		// Config pre-warm also precedes the print return: print one-shots (`pi -p`)
+		// keep the palace config so shutdown mining can spawn for them too.
+		assert.ok(h.state.config, "print-mode start pre-warms the palace config");
+	});
+
+	it("print one-shots mine their transcript at shutdown (pi -p persistence)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		const f = join(scratch, "sessions", "print.jsonl");
+
+		await h.driveSessionStart("print", f);
+		await h.driveShutdown("quit", f);
+
+		assert.deepEqual(h.mineBackgroundCalls, [f], "print session must mine at shutdown");
 	});
 
 	it("reset() replaces a stale capture between starts on shared state", async () => {
