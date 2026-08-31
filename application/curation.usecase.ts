@@ -1,5 +1,5 @@
 /**
- * CurationUseCase — builds the worker subagent curation prompt.
+ * CurationUseCase — builds the in-session curation checkpoint prompt.
  *
  * Pure orchestration: resolves the active palace config, then delegates
  * prompt construction to the domain layer.

@@ -1,7 +1,7 @@
 /**
  * Curation prompt builder — pure function.
  *
- * Builds the worker subagent task string used for periodic LLM curation.
+ * Builds the in-session curation checkpoint message used for periodic LLM curation.
  * No side-effects, no I/O, no pi dependencies.
  */
 
@@ -13,7 +13,7 @@ export function buildCurationPrompt(
 ): string {
 	return (
 		`[MemPalace checkpoint — ${exchangeCount} exchanges]\n` +
-		`You are a curation worker. Use the active profile's MemPalace MCP server ` +
+		`Curate this session yourself, now — do NOT dispatch a subagent. Use the active profile's MemPalace MCP server ` +
 		`(\`mcp({ tool: "mempalace_mempalace_<action>", args: "..." })\`) to file ` +
 		`up to 3 key items from this session into the palace at:\n` +
 		`  ${config.palace}\n` +

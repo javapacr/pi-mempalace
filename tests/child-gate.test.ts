@@ -20,10 +20,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { resolveChildWakeupGate } from "../domain/child-gate";
+import { buildCurationPrompt } from "../domain/curation-prompt";
 import { registerMempalaceEvents } from "../infrastructure/event-registration";
 import {
 	SessionState,
 	RECALL_CUSTOM_TYPE,
+	SAVE_INTERVAL,
 	type SearchResult,
 } from "../domain/types";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -184,6 +186,7 @@ interface Harness {
 	installerCalls: string[];
 	mineSyncCalls: string[];
 	mineBackgroundCalls: string[];
+	sentMessages: Array<{ message: unknown; options: unknown }>;
 	recallHits: SearchResult;
 	setEnv(env: Record<string, string | undefined>): void;
 	driveSessionStart(mode?: string, sessionFile?: string | null): Promise<void>;
@@ -212,6 +215,7 @@ function buildHarness(recallHits: SearchResult): Harness {
 	const installerCalls: string[] = [];
 	const mineSyncCalls: string[] = [];
 	const mineBackgroundCalls: string[] = [];
+	const sentMessages: Array<{ message: unknown; options: unknown }> = [];
 
 	const pi = {
 		on: (name: string, fn: Handler) => {
@@ -220,7 +224,9 @@ function buildHarness(recallHits: SearchResult): Harness {
 			handlers.set(name, list);
 		},
 		registerCommand: () => {},
-		sendMessage: () => {},
+		sendMessage: (message: unknown, options: unknown) => {
+			sentMessages.push({ message, options });
+		},
 	} as unknown as ExtensionAPI;
 
 	const wakeUp = {
@@ -272,6 +278,7 @@ function buildHarness(recallHits: SearchResult): Harness {
 		installerCalls,
 		mineSyncCalls,
 		mineBackgroundCalls,
+		sentMessages,
 		recallHits,
 		setEnv: (env) => {
 			for (const [k, v] of Object.entries(env)) {
@@ -653,6 +660,61 @@ describe("session_before_compact mining", () => {
 });
 
 // ── agent_end capture refresh: keeps shutdown mining on the live file ───────
+
+describe("in-session curation checkpoint", () => {
+	it("checkpoint prompt is in-session and subagent-free", () => {
+		const prompt = buildCurationPrompt(
+			{ palace: "/tmp/palace", wing: "sessions", rooms: [] },
+			30,
+		);
+
+		assert.match(prompt, /\[MemPalace checkpoint — 30 exchanges\]/);
+		assert.match(prompt, /Curate this session yourself/);
+		assert.match(prompt, /do NOT dispatch a subagent/);
+		assert.match(prompt, /CURATION COMPLETE/);
+		assert.match(prompt, /\/tmp\/palace/);
+		assert.doesNotMatch(prompt, /subagent\(/);
+		assert.doesNotMatch(prompt, /You are a curation worker/);
+	});
+
+	it("curation checkpoint fires in-session every SAVE_INTERVAL exchanges (no subagent)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart("interactive", join(scratch, "sessions", "s.jsonl"));
+
+		for (let i = 0; i < SAVE_INTERVAL; i++) {
+			await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
+		}
+
+		assert.equal(h.sentMessages.length, 1);
+		const msg = h.sentMessages[0].message as {
+			customType: string;
+			content: string;
+			display: boolean;
+		};
+		assert.equal(msg.customType, "mempalace-autosave");
+		// Raw prompt passthrough — the old code wrapped it in a
+		// "Dispatch worker curation subagent" subagent() instruction.
+		assert.equal(msg.content, "x");
+		assert.equal(msg.display, false);
+		assert.deepEqual(h.sentMessages[0].options, {
+			triggerTurn: true,
+			deliverAs: "nextTurn",
+		});
+	});
+
+	it("no checkpoint before SAVE_INTERVAL exchanges", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart("interactive", join(scratch, "sessions", "s.jsonl"));
+
+		for (let i = 0; i < SAVE_INTERVAL - 1; i++) {
+			await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
+		}
+
+		assert.equal(h.sentMessages.length, 0);
+	});
+});
 
 describe("agent_end transcript capture refresh", () => {
 	const fileA = () => join(scratch, "sessions", "a.jsonl");

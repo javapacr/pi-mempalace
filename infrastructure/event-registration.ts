@@ -237,12 +237,13 @@ export function registerMempalaceEvents(
 			state.conversationCount,
 		);
 
+		// In-session curation checkpoint (user decision 2026-09-01): the
+		// current session files items itself — no subagent; it already has
+		// the conversation in context.
 		pi.sendMessage(
 			{
 				customType: "mempalace-autosave",
-				content:
-					`Dispatch worker curation subagent:\n` +
-					`subagent({ agent: "worker", context: "fork", async: true, task: ${JSON.stringify(prompt)} })`,
+				content: prompt,
 				display: false,
 			},
 			{ triggerTurn: true, deliverAs: "nextTurn" },
