@@ -133,7 +133,7 @@ bun build index.ts --no-bundle
 ## Child gate & escape hatch
 
 Subagent children (`PI_SUBAGENT_CHILD=1`, fresh and fork) skip the wake-up
-fetch/append, `syncSkills`, and `ensureMcp` at `session_start` — and the
+fetch/append and `syncSkills` at `session_start` — and the
 `before_agent_start` self-heal retry — while keeping recall
 (`RECALL_CUSTOM_TYPE`) and session-shutdown transcript mining (config
 resolution is intentionally not gated). One-time stderr logs mark the skip

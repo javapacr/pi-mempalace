@@ -100,8 +100,13 @@ export function registerMempalaceEvents(
 		// Sync skills fire-and-forget. Swallow errors.
 		syncSkills(skillInstaller).catch(() => {});
 
-		// Ensure MCP server registration fire-and-forget. Swallow errors.
-		ensureMcp(pi, ctx.cwd, ctx.mode).catch(() => {});
+		// MCP registration is DISABLED (user decision 2026-09-01): both profiles
+		// carry a static `mempalace` entry in mcp.json, which owns registration.
+		// ensureMcp() has been a guaranteed skip since then — commented out so
+		// the extension can never auto-register. Manual diagnostic:
+		// /mempalace-mcp-status (its ensureMcp call can still register if no
+		// static entry exists).
+		// ensureMcp(pi, ctx.cwd, ctx.mode).catch(() => {});
 	});
 
 	// ── Manual sync command ─────────────────────────────────────────────────
