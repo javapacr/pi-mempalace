@@ -1,10 +1,11 @@
 /**
- * Repo-wing awareness of the curation checkpoint prompt (BRD P2 §11 sibling).
+ * Wing contract of the curation checkpoint prompt.
  *
- * The old prompt hardcoded `Target wing: sessions`, steering diary writes away
- * from repo wings. "sessions" is the mined-transcript archive, never a diary
- * home; repo-anchored work files under the repo's wing, personal/cross-repo
- * items under the agent wing.
+ * The extension ships wing MECHANISM only: the caller-resolved `Likely repo
+ * wing: X` hint is interpolated, and no wing-routing policy sentences are
+ * embedded (2026-09-01 genericity strip — pi extensions must be generic;
+ * wing-routing policy is owned by MemPalace core tool descriptions and
+ * user-side config/docs).
  */
 
 import assert from "node:assert/strict";
@@ -16,23 +17,7 @@ function cfg(wing: string | null): MempalaceConfig {
 	return { palace: "/tmp/palace", wing, rooms: [] };
 }
 
-describe("repo-wing aware checkpoint prompt", () => {
-	it("steers to repo wings instead of sessions", () => {
-		const prompt = buildCurationPrompt(cfg("sessions"), 30);
-		assert.match(
-			prompt,
-			/Target wing: if this session's work is anchored in a long-lived repo/,
-		);
-		assert.match(prompt, /The sessions wing is for mined transcripts, not diaries/);
-	});
-
-	it("never presents sessions as the diary target", () => {
-		for (const wing of ["sessions", null]) {
-			const prompt = buildCurationPrompt(cfg(wing), 30);
-			assert.doesNotMatch(prompt, /Target wing: sessions/);
-		}
-	});
-
+describe("wing-mechanism-only checkpoint prompt", () => {
 	it("interpolates the caller-resolved repo hint only when provided", () => {
 		const withHint = buildCurationPrompt(cfg(null), 30, "pi-mempalace");
 		assert.match(withHint, /Likely repo wing: pi-mempalace/);
@@ -40,11 +25,17 @@ describe("repo-wing aware checkpoint prompt", () => {
 		assert.doesNotMatch(withoutHint, /Likely repo wing:/);
 	});
 
-	it("personal/cross-repo items go to the agent wing", () => {
-		const named = buildCurationPrompt(cfg("alice"), 30);
-		assert.match(named, /your agent wing \(e\.g\. alice\)/);
-		const unnamed = buildCurationPrompt(cfg(null), 30);
-		assert.match(unnamed, /your agent wing\./);
+	it("embeds no wing-routing policy regardless of wing or hint", () => {
+		for (const wing of ["sessions", "alice", null]) {
+			for (const hint of [undefined, "some-repo"]) {
+				const prompt = buildCurationPrompt(cfg(wing), 30, hint);
+				assert.doesNotMatch(prompt, /Target wing:/);
+				assert.doesNotMatch(prompt, /agent wing/);
+				assert.doesNotMatch(prompt, /sessions wing/);
+				assert.doesNotMatch(prompt, /Personal or cross-repo/);
+				assert.doesNotMatch(prompt, /pi-mempalace-github/);
+			}
+		}
 	});
 
 	it("original checkpoint contract still holds", () => {
