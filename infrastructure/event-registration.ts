@@ -20,7 +20,7 @@ import type { CurationUseCase } from "../application/curation.usecase";
 import type { MiningUseCase } from "../application/mining.usecase";
 import type { SkillSyncReport } from "../application/skill-sync.usecase";
 import { syncSkills } from "../application/skill-sync.usecase";
-import { ensureMcp } from "../application/mcp-ownership.usecase";
+// import { ensureMcp } from "../application/mcp-ownership.usecase"; // MCP registration is manual — static mcp.json owns it (2026-09-01)
 import type {
 	readSkillDirState,
 	installSkill,
@@ -125,6 +125,10 @@ export function registerMempalaceEvents(
 		},
 	});
 
+	// MCP registration is manual (static mcp.json owns it — user decision
+	// 2026-09-01). The status diagnostic below doubled as a register-if-absent
+	// path, so it is disabled entirely.
+	/*
 	// ── Manual MCP status command ────────────────────────────────────────────
 	pi.registerCommand("mempalace-mcp-status", {
 		description:
@@ -179,6 +183,7 @@ export function registerMempalaceEvents(
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
+	*/
 
 	// ── before_agent_start — inject memories + wake-up into system prompt ────
 	pi.on("before_agent_start", async (event, _ctx) => {
