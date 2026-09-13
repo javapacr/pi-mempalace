@@ -5,7 +5,10 @@
  * appropriate use case and maps the result back to pi's return shape.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import {
 	SAVE_INTERVAL,
 	RECALL_CUSTOM_TYPE,
@@ -13,6 +16,7 @@ import {
 } from "../domain/types";
 import { resolveMempalaceConfig } from "../domain/palace-router";
 import { resolveChildWakeupGate } from "../domain/child-gate";
+import { parseRequestAttentionPayload } from "../domain/attention";
 import { formatRecallContext } from "../domain/recall-parser";
 import type { WakeUpUseCase } from "../application/wake-up.usecase";
 import type { RecallUseCase } from "../application/recall.usecase";
@@ -64,9 +68,15 @@ export function registerMempalaceEvents(
 		readonly updateSkill: typeof updateSkill;
 	},
 ): void {
+	// Notify capability captured at session_start (event-bus.ts pattern) —
+	// captured BEFORE any early return so every mode (print one-shot, gated
+	// child) can still surface shared-bus `request-attention` signals.
+	let uiNotify: ExtensionUIContext["notify"] | undefined;
+
 	// ── session_start — reset counter + load wake-up context + sync skills + ensure MCP ──
 	pi.on("session_start", async (_event, ctx) => {
 		state.reset();
+		uiNotify = ctx.ui.notify.bind(ctx.ui);
 		// Capture this runtime's transcript file BEFORE any early return —
 		// every session mines its own transcript at shutdown (file-granular,
 		// targeting this capture), so the capture must exist on all paths.
@@ -107,6 +117,17 @@ export function registerMempalaceEvents(
 		// /mempalace-mcp-status (its ensureMcp call can still register if no
 		// static entry exists).
 		// ensureMcp(pi, ctx.cwd, ctx.mode).catch(() => {});
+	});
+
+	// ── request-attention — pi-claude-sandbox's pre-prompt signal ────────────
+	// Fired just before its interactive sandbox-permission prompt. Surfaced
+	// as a transient ctx.ui.notify toast (warning): the toast self-clears,
+	// which is the whole lifecycle story — the emitter sends no clear event.
+	// The payload stays in-process (no telemetry/external sends). Before any
+	// session_start (nothing captured yet) this is a safe no-op.
+	pi.events.on("request-attention", (data) => {
+		const { message } = parseRequestAttentionPayload(data);
+		uiNotify?.(message, "warning");
 	});
 
 	// ── Manual sync command ─────────────────────────────────────────────────
@@ -189,8 +210,10 @@ export function registerMempalaceEvents(
 	pi.on("before_agent_start", async (event, _ctx) => {
 		if (!event.prompt || event.prompt.length < 10) return;
 
-		const cwd: string =
-			(_ctx as unknown as { cwd: string }).cwd ?? process.cwd();
+		// SAFETY: the handler type promises a full ExtensionContext, but some
+		// hosts deliver a minimal ctx whose `cwd` is absent at runtime; the cast
+		// only reads the property and `?? process.cwd()` covers a missing value.
+		const cwd: string = (_ctx as unknown as { cwd: string }).cwd ?? process.cwd();
 
 		// One-shot self-heal retry if wake-up failed at session_start.
 		// Gated per-event for subagent children (PRD §4 A1) — print-mode

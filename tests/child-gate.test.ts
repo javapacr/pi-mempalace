@@ -47,11 +47,18 @@ describe("resolveChildWakeupGate (AC-A4)", () => {
 		});
 	});
 
-	it("requires exact PI_SUBAGENT_CHILD === \"1\" (\"0\", \"true\", \"yes\", \"2\" are parents)", () => {
+	it('requires exact PI_SUBAGENT_CHILD === "1" ("0", "true", "yes", "2" are parents)', () => {
 		for (const v of ["0", "true", "yes", "2", ""]) {
-			assert.equal(resolveChildWakeupGate({ PI_SUBAGENT_CHILD: v }).isChild, false, `PI_SUBAGENT_CHILD=${JSON.stringify(v)}`);
+			assert.equal(
+				resolveChildWakeupGate({ PI_SUBAGENT_CHILD: v }).isChild,
+				false,
+				`PI_SUBAGENT_CHILD=${JSON.stringify(v)}`,
+			);
 		}
-		assert.equal(resolveChildWakeupGate({ PI_SUBAGENT_CHILD: "1" }).isChild, true);
+		assert.equal(
+			resolveChildWakeupGate({ PI_SUBAGENT_CHILD: "1" }).isChild,
+			true,
+		);
 	});
 
 	it("gates a plain child (no hatch)", () => {
@@ -107,7 +114,7 @@ describe("resolveChildWakeupGate (AC-A4)", () => {
 		});
 	});
 
-	it("scoped hatch: csv tokens are trimmed (\"scout, worker\" matches \"worker\")", () => {
+	it('scoped hatch: csv tokens are trimmed ("scout, worker" matches "worker")', () => {
 		const g = resolveChildWakeupGate({
 			PI_SUBAGENT_CHILD: "1",
 			PI_MEMPALACE_CHILD_WAKEUP: "1",
@@ -133,7 +140,7 @@ describe("resolveChildWakeupGate (AC-A4)", () => {
 		});
 	});
 
-	it("scoped hatch: matching is case-sensitive (\"Scout\" ≠ \"scout\")", () => {
+	it('scoped hatch: matching is case-sensitive ("Scout" ≠ "scout")', () => {
 		const g = resolveChildWakeupGate({
 			PI_SUBAGENT_CHILD: "1",
 			PI_MEMPALACE_CHILD_WAKEUP: "1",
@@ -153,7 +160,7 @@ describe("resolveChildWakeupGate (AC-A4)", () => {
 		assert.equal(g.reason, "child-hatch-out-of-scope");
 	});
 
-	it("hatch requires exact PI_MEMPALACE_CHILD_WAKEUP === \"1\"", () => {
+	it('hatch requires exact PI_MEMPALACE_CHILD_WAKEUP === "1"', () => {
 		for (const v of ["0", "true", "yes", ""]) {
 			const g = resolveChildWakeupGate({
 				PI_SUBAGENT_CHILD: "1",
@@ -223,6 +230,9 @@ function buildHarness(recallHits: SearchResult): Harness {
 			list.push(fn);
 			handlers.set(name, list);
 		},
+		// Shared-bus stub — registration only; the attention listener has its
+		// own dedicated wiring tests in tests/attention.test.ts.
+		events: { on: () => () => {} },
 		registerCommand: () => {},
 		sendMessage: (message: unknown, options: unknown) => {
 			sentMessages.push({ message, options });
@@ -240,7 +250,9 @@ function buildHarness(recallHits: SearchResult): Harness {
 		execute: async () => recallHits,
 	} as unknown as RecallUseCase;
 
-	const curation = { buildPrompt: async () => ({ prompt: "x" }) } as unknown as CurationUseCase;
+	const curation = {
+		buildPrompt: async () => ({ prompt: "x" }),
+	} as unknown as CurationUseCase;
 	const mining = {
 		mineSync: async (sessionFile: string) => {
 			mineSyncCalls.push(sessionFile);
@@ -263,12 +275,23 @@ function buildHarness(recallHits: SearchResult): Harness {
 		},
 	) as never;
 
-	registerMempalaceEvents(pi, state, wakeUp, recall, curation, mining, skillInstaller);
+	registerMempalaceEvents(
+		pi,
+		state,
+		wakeUp,
+		recall,
+		curation,
+		mining,
+		skillInstaller,
+	);
 
 	const ctxBase = () => ({
 		mode: "interactive",
 		cwd: scratch,
 		sessionManager: { getSessionFile: () => null },
+		// session_start captures ctx.ui.notify unconditionally (request-attention
+		// support) — no-op recording stub here; delivery is tested in attention.test.ts.
+		ui: { notify: () => {} },
 	});
 
 	return {
@@ -293,13 +316,18 @@ function buildHarness(recallHits: SearchResult): Harness {
 			const fns = handlers.get("session_start") ?? [];
 			assert.ok(fns.length > 0, "session_start handler registered");
 			for (const fn of fns)
-				await fn({}, {
-					...ctxBase(),
-					mode,
-					sessionManager: { getSessionFile: () => sessionFile },
-				});
+				await fn(
+					{},
+					{
+						...ctxBase(),
+						mode,
+						sessionManager: { getSessionFile: () => sessionFile },
+					},
+				);
 		},
-		driveTurn: async (prompt = "please remember the palindrome drawer for this task") => {
+		driveTurn: async (
+			prompt = "please remember the palindrome drawer for this task",
+		) => {
 			const fns = handlers.get("before_agent_start") ?? [];
 			assert.ok(fns.length > 0, "before_agent_start handler registered");
 			let last: Record<string, unknown> | undefined;
@@ -375,11 +403,26 @@ describe("session gating (AC-A5, A1 pins)", () => {
 		await h.driveTurn();
 		await h.driveTurn();
 
-		assert.equal(h.wakeUpCalls.length, 0, "wakeUp.execute must never run in a child");
-		assert.equal(h.installerCalls.length, 0, "skill installer must never be touched in a child");
+		assert.equal(
+			h.wakeUpCalls.length,
+			0,
+			"wakeUp.execute must never run in a child",
+		);
+		assert.equal(
+			h.installerCalls.length,
+			0,
+			"skill installer must never be touched in a child",
+		);
 		assert.equal(h.state.wakeUpContext, null, "no wake-up context in a child");
-		assert.ok(h.state.config, "palace config must still resolve in a child (session_shutdown mining)");
-		assert.equal(h.state.config?.palace, join(scratch, "palace"), "config resolved from the env palace leg");
+		assert.ok(
+			h.state.config,
+			"palace config must still resolve in a child (session_shutdown mining)",
+		);
+		assert.equal(
+			h.state.config?.palace,
+			join(scratch, "palace"),
+			"config resolved from the env palace leg",
+		);
 	});
 
 	it("parent env: wakeUp.execute called exactly 1 time across session_start + 2 turns; systemPrompt keeps the wake-up block", async () => {
@@ -390,10 +433,15 @@ describe("session gating (AC-A5, A1 pins)", () => {
 		const r1 = await h.driveTurn();
 		await h.driveTurn();
 
-		assert.equal(h.wakeUpCalls.length, 1, "parent fetches wake-up exactly once (session_start); self-heal must not re-fire");
+		assert.equal(
+			h.wakeUpCalls.length,
+			1,
+			"parent fetches wake-up exactly once (session_start); self-heal must not re-fire",
+		);
 		assert.equal(h.state.wakeUpContext, "WAKE-UP-CONTENT");
 		assert.ok(
-			typeof r1?.systemPrompt === "string" && r1.systemPrompt.includes("[MemPalace Session Context]"),
+			typeof r1?.systemPrompt === "string" &&
+				r1.systemPrompt.includes("[MemPalace Session Context]"),
 			"parent system prompt still carries the wake-up block (A5 byte-invariance)",
 		);
 	});
@@ -403,10 +451,21 @@ describe("session gating (AC-A5, A1 pins)", () => {
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
 
 		await h.driveSessionStart("print");
-		assert.equal(h.wakeUpCalls.length, 0, "print-mode session_start skips the fetch");
-		assert.ok(h.state.config, "print-mode start still pre-warms the palace config");
+		assert.equal(
+			h.wakeUpCalls.length,
+			0,
+			"print-mode session_start skips the fetch",
+		);
+		assert.ok(
+			h.state.config,
+			"print-mode start still pre-warms the palace config",
+		);
 		await h.driveTurn();
-		assert.equal(h.wakeUpCalls.length, 1, "self-heal still fetches once for a print-mode parent");
+		assert.equal(
+			h.wakeUpCalls.length,
+			1,
+			"self-heal still fetches once for a print-mode parent",
+		);
 	});
 
 	it("child print mode: BOTH session_start and the self-heal path stay silent (the print-child leak)", async () => {
@@ -417,7 +476,11 @@ describe("session gating (AC-A5, A1 pins)", () => {
 		await h.driveTurn();
 		await h.driveTurn();
 
-		assert.equal(h.wakeUpCalls.length, 0, "print children must not reach wake-up via the self-heal");
+		assert.equal(
+			h.wakeUpCalls.length,
+			0,
+			"print children must not reach wake-up via the self-heal",
+		);
 	});
 
 	it("child + hatch: wake-up allowed exactly once", async () => {
@@ -449,7 +512,9 @@ describe("recall contract in children (AC-A2)", () => {
 
 		assert.ok(r, "handler returned a result");
 		assert.ok(!("systemPrompt" in r), "no systemPrompt key under child gating");
-		const message = r.message as { customType: string; content: string } | undefined;
+		const message = r.message as
+			| { customType: string; content: string }
+			| undefined;
 		assert.ok(message, "recall message present");
 		assert.equal(message.customType, RECALL_CUSTOM_TYPE);
 		assert.ok(message.content.includes("palindrome"), "recall content carried");
@@ -467,9 +532,13 @@ describe("recall contract in children (AC-A2)", () => {
 		const r = await h.driveTurn();
 
 		assert.ok(r && typeof r === "object");
-		assert.equal((r.message as { customType: string }).customType, RECALL_CUSTOM_TYPE);
+		assert.equal(
+			(r.message as { customType: string }).customType,
+			RECALL_CUSTOM_TYPE,
+		);
 		assert.ok(
-			typeof r.systemPrompt === "string" && r.systemPrompt.includes("[MemPalace Session Context]"),
+			typeof r.systemPrompt === "string" &&
+				r.systemPrompt.includes("[MemPalace Session Context]"),
 			"parent keeps wake-up systemPrompt alongside recall",
 		);
 	});
@@ -486,7 +555,11 @@ describe("per-event hatch evaluation (A3)", () => {
 
 		h.setEnv({ PI_MEMPALACE_CHILD_WAKEUP: "1" });
 		await h.driveTurn();
-		assert.equal(h.wakeUpCalls.length, 1, "hatch honored at the next event after the flip");
+		assert.equal(
+			h.wakeUpCalls.length,
+			1,
+			"hatch honored at the next event after the flip",
+		);
 	});
 });
 
@@ -506,7 +579,9 @@ describe("one-time gate logs (A6/A3)", () => {
 		} finally {
 			console.error = orig;
 		}
-		const skips = errors.filter((l) => l.includes("MemPalace: child gate active"));
+		const skips = errors.filter((l) =>
+			l.includes("MemPalace: child gate active"),
+		);
 		assert.equal(skips.length, 1, "exactly one gate-skip log line");
 		assert.ok(skips[0].includes("child-gated"), "log carries the reason");
 	});
@@ -525,7 +600,9 @@ describe("one-time gate logs (A6/A3)", () => {
 		} finally {
 			console.error = orig;
 		}
-		const hatches = errors.filter((l) => l.includes("MemPalace: child wake-up hatch active"));
+		const hatches = errors.filter((l) =>
+			l.includes("MemPalace: child wake-up hatch active"),
+		);
 		assert.equal(hatches.length, 1, "exactly one hatch log line");
 	});
 });
@@ -680,7 +757,10 @@ describe("in-session curation checkpoint", () => {
 	it("curation checkpoint fires in-session every SAVE_INTERVAL exchanges (no subagent)", async () => {
 		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
-		await h.driveSessionStart("interactive", join(scratch, "sessions", "s.jsonl"));
+		await h.driveSessionStart(
+			"interactive",
+			join(scratch, "sessions", "s.jsonl"),
+		);
 
 		for (let i = 0; i < SAVE_INTERVAL; i++) {
 			await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
@@ -706,7 +786,10 @@ describe("in-session curation checkpoint", () => {
 	it("no checkpoint before SAVE_INTERVAL exchanges", async () => {
 		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
-		await h.driveSessionStart("interactive", join(scratch, "sessions", "s.jsonl"));
+		await h.driveSessionStart(
+			"interactive",
+			join(scratch, "sessions", "s.jsonl"),
+		);
 
 		for (let i = 0; i < SAVE_INTERVAL - 1; i++) {
 			await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
@@ -771,7 +854,11 @@ describe("session_start capture pins", () => {
 		await h.driveSessionStart("print", f);
 		await h.driveShutdown("quit", f);
 
-		assert.deepEqual(h.mineBackgroundCalls, [f], "print session must mine at shutdown");
+		assert.deepEqual(
+			h.mineBackgroundCalls,
+			[f],
+			"print session must mine at shutdown",
+		);
 	});
 
 	it("reset() replaces a stale capture between starts on shared state", async () => {

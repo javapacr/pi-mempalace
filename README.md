@@ -48,6 +48,7 @@ index.ts                          # Entry — wires up use cases + event registr
 | `agent_end`                  | Every 15 exchanges, inject an in-session curation checkpoint that files key items via the MemPalace MCP tools |
 | `session_before_compact`     | Mine the session transcript before summarisation                    |
 | `session_shutdown`           | Background mine of the session transcript file on quit and session replacement (new/resume/fork; not reload) |
+| pi.events `request-attention` | Listen for pi-claude-sandbox's sandbox-permission signal and surface it as a transient `ctx.ui.notify` toast (warning); no clear event exists — toast self-clears; payload stays in-process |
 
 ## Dormant Maintenance Tools
 
