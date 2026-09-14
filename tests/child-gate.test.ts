@@ -14,19 +14,24 @@
  *  - A6: one-time skip/hatch log lines.
  */
 
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { resolveChildWakeupGate } from "../domain/child-gate";
+import {
+	resolveChildWakeupGate,
+	childFeatureGates,
+} from "../domain/child-gate";
 import { buildCurationPrompt } from "../domain/curation-prompt";
 import { registerMempalaceEvents } from "../infrastructure/event-registration";
 import {
 	SessionState,
 	RECALL_CUSTOM_TYPE,
 	SAVE_INTERVAL,
+	DEFAULT_MEMPALACE_SETTINGS,
 	type SearchResult,
+	type MempalaceSettings,
 } from "../domain/types";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { WakeUpUseCase } from "../application/wake-up.usecase";
@@ -186,10 +191,67 @@ describe("resolveChildWakeupGate (AC-A4)", () => {
 
 type Handler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
 
+// ── childFeatureGates: settings-only recall/curation gates ──────────────
+
+describe("childFeatureGates (settings-only)", () => {
+	it("primary: recall per master switch, curation always (null settings → defaults)", () => {
+		assert.deepEqual(childFeatureGates(false, null), {
+			recall: true,
+			curation: true,
+		});
+		assert.deepEqual(childFeatureGates(false, DEFAULT_MEMPALACE_SETTINGS), {
+			recall: true,
+			curation: true,
+		});
+	});
+
+	it("child defaults: no recall, no curation (primary-only by default)", () => {
+		assert.deepEqual(childFeatureGates(true, null), {
+			recall: false,
+			curation: false,
+		});
+		assert.deepEqual(childFeatureGates(true, DEFAULT_MEMPALACE_SETTINGS), {
+			recall: false,
+			curation: false,
+		});
+	});
+
+	it("child opt-in enables each leg independently", () => {
+		const recallOnly: MempalaceSettings = {
+			...DEFAULT_MEMPALACE_SETTINGS,
+			children: { recall: true, curation: false },
+		};
+		assert.deepEqual(childFeatureGates(true, recallOnly), {
+			recall: true,
+			curation: false,
+		});
+		const curateOnly: MempalaceSettings = {
+			...DEFAULT_MEMPALACE_SETTINGS,
+			children: { recall: false, curation: true },
+		};
+		assert.deepEqual(childFeatureGates(true, curateOnly), {
+			recall: false,
+			curation: true,
+		});
+	});
+
+	it("master switch off disables recall for primary and child alike; curation unaffected", () => {
+		const masterOff: MempalaceSettings = {
+			...DEFAULT_MEMPALACE_SETTINGS,
+			recallOnPrompt: false,
+			children: { recall: true, curation: true },
+		};
+		assert.equal(childFeatureGates(false, masterOff).recall, false);
+		assert.equal(childFeatureGates(true, masterOff).recall, false);
+		assert.equal(childFeatureGates(true, masterOff).curation, true);
+	});
+});
+
 interface Harness {
 	state: SessionState;
 	handlers: Map<string, Handler[]>;
 	wakeUpCalls: string[];
+	recallCalls: string[];
 	installerCalls: string[];
 	mineSyncCalls: string[];
 	mineBackgroundCalls: string[];
@@ -215,10 +277,26 @@ const GATE_ENV_KEYS = [
 let savedEnv: Record<string, string | undefined> = {};
 let scratch = "";
 
+/** Write the project settings leg (<scratch>/.pi/settings.json — ctx.cwd). */
+async function writeProjectSettings(mempalace: unknown): Promise<void> {
+	const dir = join(scratch, ".pi");
+	await mkdir(dir, { recursive: true });
+	await writeFile(join(dir, "settings.json"), JSON.stringify({ mempalace }));
+}
+
+/** Write the profile settings leg (PI_CODING_AGENT_DIR = <scratch>/agent). */
+async function writeProfileSettings(mempalace: unknown): Promise<void> {
+	await writeFile(
+		join(scratch, "agent", "settings.json"),
+		JSON.stringify({ mempalace }),
+	);
+}
+
 function buildHarness(recallHits: SearchResult): Harness {
 	const state = new SessionState();
 	const handlers = new Map<string, Handler[]>();
 	const wakeUpCalls: string[] = [];
+	const recallCalls: string[] = [];
 	const installerCalls: string[] = [];
 	const mineSyncCalls: string[] = [];
 	const mineBackgroundCalls: string[] = [];
@@ -247,7 +325,10 @@ function buildHarness(recallHits: SearchResult): Harness {
 	} as unknown as WakeUpUseCase;
 
 	const recall = {
-		execute: async () => recallHits,
+		execute: async (prompt: string) => {
+			recallCalls.push(prompt);
+			return recallHits;
+		},
 	} as unknown as RecallUseCase;
 
 	const curation = {
@@ -298,6 +379,7 @@ function buildHarness(recallHits: SearchResult): Harness {
 		state,
 		handlers,
 		wakeUpCalls,
+		recallCalls,
 		installerCalls,
 		mineSyncCalls,
 		mineBackgroundCalls,
@@ -498,8 +580,8 @@ describe("session gating (AC-A5, A1 pins)", () => {
 	});
 });
 
-describe("recall contract in children (AC-A2)", () => {
-	it("child env with a recall hit: RECALL_CUSTOM_TYPE message and NO systemPrompt key", async () => {
+describe("recall gating (settings-driven; reworks the AC-A2 child-recall contract)", () => {
+	it("child env + defaults: recall never runs, no message, no systemPrompt", async () => {
 		const h = buildHarness({
 			snippets: ["memory snippet about palindromes"],
 			wing: null,
@@ -510,8 +592,28 @@ describe("recall contract in children (AC-A2)", () => {
 		await h.driveSessionStart();
 		const r = await h.driveTurn();
 
+		assert.equal(r, undefined, "gated child with no wake-up returns nothing");
+		assert.deepEqual(
+			h.recallCalls,
+			[],
+			"default child must not call recall.execute",
+		);
+	});
+
+	it("child env + children.recall=true (project settings): recall message, no systemPrompt", async () => {
+		const h = buildHarness({
+			snippets: ["memory snippet about palindromes"],
+			wing: null,
+			palace: "/tmp/palace",
+		});
+		h.setEnv({ PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" });
+		await writeProjectSettings({ children: { recall: true } });
+
+		await h.driveSessionStart();
+		const r = await h.driveTurn();
+
 		assert.ok(r, "handler returned a result");
-		assert.ok(!("systemPrompt" in r), "no systemPrompt key under child gating");
+		assert.ok(!("systemPrompt" in r), "opted-in child still has no wake-up");
 		const message = r.message as
 			| { customType: string; content: string }
 			| undefined;
@@ -541,6 +643,27 @@ describe("recall contract in children (AC-A2)", () => {
 				r.systemPrompt.includes("[MemPalace Session Context]"),
 			"parent keeps wake-up systemPrompt alongside recall",
 		);
+	});
+
+	it("master off (recall_on_prompt=false): no recall anywhere, wake-up leg intact", async () => {
+		const h = buildHarness({
+			snippets: ["memory snippet about palindromes"],
+			wing: null,
+			palace: "/tmp/palace",
+		});
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await writeProfileSettings({ recall_on_prompt: false });
+
+		await h.driveSessionStart();
+		const r = await h.driveTurn();
+
+		assert.deepEqual(h.recallCalls, [], "master off must skip recall.execute");
+		assert.ok(
+			typeof r?.systemPrompt === "string" &&
+				r.systemPrompt.includes("[MemPalace Session Context]"),
+			"wake-up injection must survive the recall gate",
+		);
+		assert.equal(r.message, undefined, "no recall snippet under master off");
 	});
 });
 
@@ -797,6 +920,74 @@ describe("in-session curation checkpoint", () => {
 
 		assert.equal(h.sentMessages.length, 0);
 	});
+
+	it("child env + defaults: checkpoint never fires (curation gate), counter still advances", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" });
+		await h.driveSessionStart(
+			"interactive",
+			join(scratch, "sessions", "s.jsonl"),
+		);
+
+		for (let i = 0; i < SAVE_INTERVAL + 1; i++) {
+			await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
+		}
+
+		assert.equal(h.sentMessages.length, 0, "default child must not checkpoint");
+		assert.equal(
+			h.state.conversationCount,
+			SAVE_INTERVAL + 1,
+			"the gate skips the send, not the counter",
+		);
+	});
+
+	it("child env + children.curation=true (project settings): checkpoint fires", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" });
+		await writeProjectSettings({ children: { curation: true } });
+		await h.driveSessionStart(
+			"interactive",
+			join(scratch, "sessions", "s.jsonl"),
+		);
+
+		for (let i = 0; i < SAVE_INTERVAL; i++) {
+			await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
+		}
+
+		assert.equal(h.sentMessages.length, 1, "opted-in child checkpoints");
+	});
+
+	it("interval comes from settings.save_interval (2 → fires on the 2nd exchange)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await writeProfileSettings({ save_interval: 2 });
+		await h.driveSessionStart(
+			"interactive",
+			join(scratch, "sessions", "s.jsonl"),
+		);
+
+		await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
+		assert.equal(h.sentMessages.length, 0);
+		await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
+		assert.equal(h.sentMessages.length, 1);
+	});
+
+	it("invalid save_interval (0) falls back to the SAVE_INTERVAL default", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await writeProfileSettings({ save_interval: 0 });
+		await h.driveSessionStart(
+			"interactive",
+			join(scratch, "sessions", "s.jsonl"),
+		);
+
+		for (let i = 0; i < SAVE_INTERVAL - 1; i++) {
+			await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
+		}
+		assert.equal(h.sentMessages.length, 0);
+		await h.driveAgentEnd(join(scratch, "sessions", "s.jsonl"));
+		assert.equal(h.sentMessages.length, 1, "fallback interval is the default 15");
+	});
 });
 
 describe("agent_end transcript capture refresh", () => {
@@ -876,5 +1067,63 @@ describe("session_start capture pins", () => {
 			b,
 			"second start must replace, not keep, the capture",
 		);
+	});
+});
+
+// ── settings snapshot pins: loaded on all session_start paths, reset clears ─
+
+describe("settings snapshot loading (all-paths pin + reset)", () => {
+	it("loads settings on the child path (before the gate return)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" });
+		await writeProjectSettings({ save_interval: 4 });
+
+		await h.driveSessionStart();
+
+		assert.equal(
+			h.state.settings?.saveInterval,
+			4,
+			"gated child must carry the parsed snapshot",
+		);
+	});
+
+	it("loads settings on the print path (before the print return)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await writeProjectSettings({ recall_on_prompt: false });
+
+		await h.driveSessionStart("print");
+
+		assert.equal(
+			h.state.settings?.recallOnPrompt,
+			false,
+			"print one-shot must carry the parsed snapshot",
+		);
+	});
+
+	it("reset() clears the snapshot; the next start re-reads from disk", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+
+		await writeProjectSettings({ save_interval: 3 });
+		await h.driveSessionStart();
+		assert.equal(h.state.settings?.saveInterval, 3);
+
+		await writeProjectSettings({ save_interval: 9 });
+		await h.driveSessionStart();
+		assert.equal(
+			h.state.settings?.saveInterval,
+			9,
+			"second start must re-read, not keep",
+		);
+	});
+
+	it("missing settings files resolve to defaults", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+
+		await h.driveSessionStart();
+
+		assert.deepEqual(h.state.settings, DEFAULT_MEMPALACE_SETTINGS);
 	});
 });

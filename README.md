@@ -41,14 +41,14 @@ index.ts                          # Entry — wires up use cases + event registr
 
 ## Active Features (Lifecycle Hooks)
 
-| Event                        | Description                                                         |
-| ---------------------------- | ------------------------------------------------------------------- |
-| `session_start`              | Load wake-up context (L0+L1 ~940 tokens) into system prompt; reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies |
-| `before_agent_start`         | Recall per-prompt memories and inject into system prompt (wake-up self-heal also gated for subagent children) |
-| `agent_end`                  | Every 15 exchanges, inject an in-session curation checkpoint that files key items via the MemPalace MCP tools |
-| `session_before_compact`     | Mine the session transcript before summarisation                    |
-| `session_shutdown`           | Background mine of the session transcript file on quit and session replacement (new/resume/fork; not reload) |
-| pi.events `request-attention` | Listen for pi-claude-sandbox's sandbox-permission signal and surface it as a transient `ctx.ui.notify` toast (warning); no clear event exists — toast self-clears; payload stays in-process |
+| Event                         | Description                                                                                                                                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session_start`               | Load wake-up context (L0+L1 ~940 tokens) into system prompt; reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies                                         |
+| `before_agent_start`          | Recall per-prompt memories and inject into system prompt; gated by settings (`recall_on_prompt` master switch; subagent children also need `children.recall`, default off) — the wake-up self-heal retry stays child-gated by the env hatch |
+| `agent_end`                   | Every `save_interval` exchanges (default 15), inject an in-session curation checkpoint that files key items via the MemPalace MCP tools; subagent children skip it unless `children.curation` is set (default off)                          |
+| `session_before_compact`      | Mine the session transcript before summarisation                                                                                                                                                                                            |
+| `session_shutdown`            | Background mine of the session transcript file on quit and session replacement (new/resume/fork; not reload)                                                                                                                                |
+| pi.events `request-attention` | Listen for pi-claude-sandbox's sandbox-permission signal and surface it as a transient `ctx.ui.notify` toast (warning); no clear event exists — toast self-clears; payload stays in-process                                                 |
 
 ## Dormant Maintenance Tools
 
@@ -135,15 +135,53 @@ bun build index.ts --no-bundle
 
 Subagent children (`PI_SUBAGENT_CHILD=1`, fresh and fork) skip the wake-up
 fetch/append and `syncSkills` at `session_start` — and the
-`before_agent_start` self-heal retry — while keeping recall
-(`RECALL_CUSTOM_TYPE`) and session-shutdown transcript mining (config
-resolution is intentionally not gated). One-time stderr logs mark the skip
-and any hatch use.
+`before_agent_start` self-heal retry — plus, by default, per-prompt recall
+and the `agent_end` curation checkpoint. Recall/curation for children are
+settings-driven (see [Settings](#settings)): `mempalace.children.recall` and
+`mempalace.children.curation` default to `false` (primary-only), and the
+`mempalace.recall_on_prompt: false` master switch disables recall everywhere.
+Transcript mining (`session_before_compact`, `session_shutdown`) is never
+gated. One-time stderr logs mark the wake-up skip and any hatch use.
 
 Escape hatch: `PI_MEMPALACE_CHILD_WAKEUP=1` (exact `"1"`, evaluated per
-event) re-enables the gated behavior; `PI_MEMPALACE_CHILD_WAKEUP_AGENTS=<csv>`
+event) re-enables the gated wake-up behavior; `PI_MEMPALACE_CHILD_WAKEUP_AGENTS=<csv>`
 scopes it against `PI_SUBAGENT_CHILD_AGENT` — an empty/absent csv is
-fleet-wide, and the agent must match a trimmed csv token exactly.
+fleet-wide, and the agent must match a trimmed csv token exactly. The hatch
+covers the wake-up leg only; the recall/curation gates read settings.
+
+## Settings
+
+Configured in pi settings under the `mempalace` key. Two files are merged
+**per key** — project wins:
+
+1. **Profile**: `$PI_CODING_AGENT_DIR/settings.json` (a relative
+   `PI_CODING_AGENT_DIR` resolves against `~/.pi`; env unset →
+   `~/.pi/agent/settings.json`)
+2. **Project**: `<cwd>/.pi/settings.json`
+
+A key that is absent or wrong-typed in the project file falls through to the
+profile file, then to its default. A missing or malformed file contributes
+nothing — the reader never throws, and each key falls back independently.
+Settings are parsed once at `session_start` on every path (children and
+print one-shots included); changes apply to the next session.
+
+| Key                              | Type         | Default | What                                                                                               |
+| -------------------------------- | ------------ | ------- | -------------------------------------------------------------------------------------------------- |
+| `mempalace.palace`               | string       | unset   | Personal palace override in the env → settings → home-relative default chain; `""` counts as unset; routing currently consumes the profile leg only — the project palace value is parsed but not yet consumed (out-of-scope by plan) |
+| `mempalace.save_interval`        | positive int | `15`    | Exchanges between `agent_end` curation checkpoints                                                 |
+| `mempalace.recall_on_prompt`     | boolean      | `true`  | Master switch for `before_agent_start` recall — `false` disables recall everywhere                 |
+| `mempalace.children.recall`      | boolean      | `false` | Subagent children run the per-prompt recall                                                        |
+| `mempalace.children.curation`    | boolean      | `false` | Subagent children run the `agent_end` curation checkpoint                                          |
+
+```jsonc
+// user: $PI_CODING_AGENT_DIR/settings.json · project: <cwd>/.pi/settings.json
+"mempalace": {
+  "palace": "",
+  "save_interval": 15,
+  "recall_on_prompt": true,
+  "children": { "recall": false, "curation": false }
+}
+```
 
 ## Known Issues
 

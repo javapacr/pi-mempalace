@@ -10,12 +10,15 @@ import type {
 	ExtensionUIContext,
 } from "@earendil-works/pi-coding-agent";
 import {
-	SAVE_INTERVAL,
+	DEFAULT_MEMPALACE_SETTINGS,
 	RECALL_CUSTOM_TYPE,
 	type SessionState,
 } from "../domain/types";
 import { resolveMempalaceConfig } from "../domain/palace-router";
-import { resolveChildWakeupGate } from "../domain/child-gate";
+import {
+	childFeatureGates,
+	resolveChildWakeupGate,
+} from "../domain/child-gate";
 import { parseRequestAttentionPayload } from "../domain/attention";
 import { formatRecallContext } from "../domain/recall-parser";
 import type { WakeUpUseCase } from "../application/wake-up.usecase";
@@ -24,6 +27,7 @@ import type { CurationUseCase } from "../application/curation.usecase";
 import type { MiningUseCase } from "../application/mining.usecase";
 import type { SkillSyncReport } from "../application/skill-sync.usecase";
 import { syncSkills } from "../application/skill-sync.usecase";
+import { readMempalaceSettings } from "./settings-reader";
 // import { ensureMcp } from "../application/mcp-ownership.usecase"; // MCP registration is manual — static mcp.json owns it (2026-09-01)
 import type {
 	readSkillDirState,
@@ -89,6 +93,12 @@ export function registerMempalaceEvents(
 		// persistence). Config resolution is cheap (env/settings reads),
 		// unlike the wake-up palace scan further below.
 		state.config = await resolveMempalaceConfig(ctx.cwd);
+		// Load settings BEFORE the child gate and the print return — children
+		// and print one-shots gate recall/curation on this snapshot (same
+		// all-paths rule as the config pre-warm above). One read per session:
+		// settings changes take effect on the next session, mirroring how the
+		// rest of pi consumes settings.
+		state.settings = await readMempalaceSettings(ctx.cwd);
 		// Print mode (plain `pi -p` one-shots) skips wake-up, skill sync, and
 		// MCP registration — a text-print run only needs its transcript mined
 		// at shutdown, which the pre-warmed config above enables. Curation
@@ -228,8 +238,16 @@ export function registerMempalaceEvents(
 			state.wakeUpContext = await wakeUp.execute(cwd);
 		}
 
-		const { snippets, wing, palace } = await recall.execute(event.prompt, cwd);
+		// Settings-driven recall gate: master switch + child opt-in. The hatch
+		// above covers the wake-up leg ONLY — recall gating ignores it and reads
+		// the session_start settings snapshot (null → defaults, as if freshly
+		// parsed). Wake-up injection below stays fully independent of recall.
+		const features = childFeatureGates(gate.isChild, state.settings);
+		const recallResult = features.recall
+			? await recall.execute(event.prompt, cwd)
+			: null;
 
+		const snippets = recallResult?.snippets ?? [];
 		const hasRecall = snippets.length > 0;
 		const hasWakeUp = Boolean(state.wakeUpContext);
 		if (!hasRecall && !hasWakeUp) return;
@@ -241,19 +259,24 @@ export function registerMempalaceEvents(
 		const context = hasRecall ? formatRecallContext(snippets) : undefined;
 
 		return {
-			...(context && {
-				message: {
-					customType: RECALL_CUSTOM_TYPE,
-					content: context,
-					display: true,
-					details: { count: snippets.length, wing, palace },
-				},
-			}),
+			...(context &&
+				recallResult && {
+					message: {
+						customType: RECALL_CUSTOM_TYPE,
+						content: context,
+						display: true,
+						details: {
+							count: snippets.length,
+							wing: recallResult.wing,
+							palace: recallResult.palace,
+						},
+					},
+				}),
 			...(systemPrompt && { systemPrompt }),
 		};
 	});
 
-	// ── agent_end — periodic LLM curation every SAVE_INTERVAL exchanges ──────
+	// ── agent_end — periodic LLM curation every settings.saveInterval exchanges ──
 	pi.on("agent_end", async (_event, ctx) => {
 		state.conversationCount++;
 		// Keep the transcript capture current — shutdown mines it. Refreshing
@@ -262,7 +285,18 @@ export function registerMempalaceEvents(
 		// refresh, shutdown mining would target a stale path in those flows.
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (sessionFile) state.sessionFile = sessionFile;
-		if (state.conversationCount % SAVE_INTERVAL !== 0) return;
+		// Settings-driven curation gate: children skip the checkpoint unless
+		// opted in via mempalace.children.curation; primary sessions always
+		// checkpoint, every settings.saveInterval exchanges. Same per-event env
+		// read as the recall gate; same settings snapshot (null → defaults).
+		const features = childFeatureGates(
+			resolveChildWakeupGate(process.env).isChild,
+			state.settings,
+		);
+		if (!features.curation) return;
+		const interval =
+			state.settings?.saveInterval ?? DEFAULT_MEMPALACE_SETTINGS.saveInterval;
+		if (state.conversationCount % interval !== 0) return;
 		if (!sessionFile) return;
 
 		const { prompt } = await curation.buildPrompt(
