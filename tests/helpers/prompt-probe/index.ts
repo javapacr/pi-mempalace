@@ -7,6 +7,9 @@
  *
  *   { ts, turn, sha256, length, mempalaceMarker, task }
  *
+ * `event.systemPrompt` is a live getter in pi >= 0.86, so a probe registered
+ * last sees sections set by earlier handlers.
+ *
  * PII discipline (security F6, PRD §9): writes HASH + LENGTH + marker FLAG
  * only — never the raw system prompt. `task` records the first 80 chars of
  * the prompt purely to prove sibling tasks differ; it is the task string
@@ -39,7 +42,11 @@ export default function promptProbeExtension(pi: ExtensionAPI): void {
 				turn: turnCount,
 				sha256: createHash("sha256").update(systemPrompt).digest("hex"),
 				length: Buffer.byteLength(systemPrompt),
-				mempalaceMarker: systemPrompt.includes("[MemPalace Session Context]"),
+				// `<mempalace>` = prompt-section injection (pi >= 0.86); the legacy
+				// header still marks the pre-change worktree in the A/B comparison.
+				mempalaceMarker:
+					systemPrompt.includes("<mempalace>\n") ||
+					systemPrompt.includes("[MemPalace Session Context]"),
 				task: prompt.slice(0, 80),
 			}) + "\n",
 		);

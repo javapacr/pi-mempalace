@@ -98,6 +98,8 @@ export class SessionState {
 	/** One-shot child-gate log flags (PRD §4 A3/A6) — one line per session. */
 	gateSkipLogged = false;
 	hatchLogged = false;
+	/** One-shot log flag: host lacks prompt sections (pi < 0.86). */
+	noSectionsLogged = false;
 	/**
 	 * Settings parsed ONCE at session_start, BEFORE the print-mode and
 	 * child-gate returns — children and print one-shots gate recall/curation
@@ -113,6 +115,7 @@ export class SessionState {
 		this.sessionFile = null;
 		this.gateSkipLogged = false;
 		this.hatchLogged = false;
+		this.noSectionsLogged = false;
 		this.settings = null;
 	}
 }

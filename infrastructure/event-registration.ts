@@ -57,6 +57,19 @@ function logHatchOnce(state: SessionState, reason: string): void {
 	);
 }
 
+// pi < 0.86 has no structured prompt sections — wake-up injection is skipped
+// there (user decision D2: no forced-systemPrompt fallback). One line per session.
+function logNoSectionsOnce(state: SessionState): void {
+	if (state.noSectionsLogged) return;
+	state.noSectionsLogged = true;
+	console.error(
+		"MemPalace: host pi has no systemPromptOptions.sections (pi < 0.86) — wake-up context not injected; recall unaffected",
+	);
+}
+
+/** Prompt section name for the wake-up context; pi renders it as `<mempalace>…</mempalace>`. */
+export const WAKEUP_SECTION = "mempalace";
+
 export function registerMempalaceEvents(
 	pi: ExtensionAPI,
 	state: SessionState,
@@ -216,10 +229,13 @@ export function registerMempalaceEvents(
 	});
 	*/
 
-	// ── before_agent_start — inject memories + wake-up into system prompt ────
+	// ── before_agent_start — wake-up as a prompt section + per-prompt recall ─
+	// The wake-up context goes into `systemPromptOptions.sections.mempalace`
+	// rather than a returned `systemPrompt`: a returned prompt forces the whole
+	// system prompt for the run and defeats pi's transcript deltas. pi rebuilds
+	// the options from base every turn, so the section is set on EVERY turn —
+	// an unset turn would record a removal delta (and re-add churn after it).
 	pi.on("before_agent_start", async (event, _ctx) => {
-		if (!event.prompt || event.prompt.length < 10) return;
-
 		// SAFETY: the handler type promises a full ExtensionContext, but some
 		// hosts deliver a minimal ctx whose `cwd` is absent at runtime; the cast
 		// only reads the property and `?? process.cwd()` covers a missing value.
@@ -238,41 +254,40 @@ export function registerMempalaceEvents(
 			state.wakeUpContext = await wakeUp.execute(cwd);
 		}
 
+		if (state.wakeUpContext) {
+			// Optional chain: pi < 0.86 delivers no systemPromptOptions at runtime.
+			const sections = event.systemPromptOptions?.sections;
+			if (sections) sections[WAKEUP_SECTION] = state.wakeUpContext;
+			else logNoSectionsOnce(state);
+		}
+
+		// Short prompts ("yes", "go") skip recall only — the wake-up section
+		// above is set regardless, so short turns don't flap the prompt.
+		if (!event.prompt || event.prompt.length < 10) return;
+
 		// Settings-driven recall gate: master switch + child opt-in. The hatch
 		// above covers the wake-up leg ONLY — recall gating ignores it and reads
 		// the session_start settings snapshot (null → defaults, as if freshly
-		// parsed). Wake-up injection below stays fully independent of recall.
+		// parsed). Wake-up injection above stays fully independent of recall.
 		const features = childFeatureGates(gate.isChild, state.settings);
 		const recallResult = features.recall
 			? await recall.execute(event.prompt, cwd)
 			: null;
 
 		const snippets = recallResult?.snippets ?? [];
-		const hasRecall = snippets.length > 0;
-		const hasWakeUp = Boolean(state.wakeUpContext);
-		if (!hasRecall && !hasWakeUp) return;
-
-		const systemPrompt = hasWakeUp
-			? `${event.systemPrompt}\n\n[MemPalace Session Context]\n${state.wakeUpContext}`
-			: undefined;
-
-		const context = hasRecall ? formatRecallContext(snippets) : undefined;
+		if (!recallResult || snippets.length === 0) return;
 
 		return {
-			...(context &&
-				recallResult && {
-					message: {
-						customType: RECALL_CUSTOM_TYPE,
-						content: context,
-						display: true,
-						details: {
-							count: snippets.length,
-							wing: recallResult.wing,
-							palace: recallResult.palace,
-						},
-					},
-				}),
-			...(systemPrompt && { systemPrompt }),
+			message: {
+				customType: RECALL_CUSTOM_TYPE,
+				content: formatRecallContext(snippets),
+				display: true,
+				details: {
+					count: snippets.length,
+					wing: recallResult.wing,
+					palace: recallResult.palace,
+				},
+			},
 		};
 	});
 

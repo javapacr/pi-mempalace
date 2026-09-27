@@ -11,7 +11,7 @@ The extension follows a Domain-Driven Design (DDD) structure:
 ```
 index.ts                          # Entry — wires up use cases + event registration
 ├── application/                  # Use cases (orchestration layer)
-│   ├── wake-up.usecase.ts        # Loads L0+L1 wake-up context into system prompt
+│   ├── wake-up.usecase.ts        # Loads L0+L1 wake-up context (injected as the `mempalace` prompt section)
 │   ├── recall.usecase.ts         # Per-prompt memory recall + injection
 │   ├── curation.usecase.ts       # Automated diary/drawer/KG curation via subagents
 │   ├── mining.usecase.ts         # Session transcript mining before compaction
@@ -43,8 +43,8 @@ index.ts                          # Entry — wires up use cases + event registr
 
 | Event                         | Description                                                                                                                                                                                                                                 |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session_start`               | Load wake-up context (L0+L1 ~940 tokens) into system prompt; reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies                                         |
-| `before_agent_start`          | Recall per-prompt memories and inject into system prompt; gated by settings (`recall_on_prompt` master switch; subagent children also need `children.recall`, default off) — the wake-up self-heal retry stays child-gated by the env hatch |
+| `session_start`               | Load wake-up context (L0+L1 ~940 tokens); reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies                                         |
+| `before_agent_start`          | Set the wake-up context as the `mempalace` system-prompt section (`systemPromptOptions.sections.mempalace`, rendered `<mempalace>…</mempalace>`) on **every** turn, short prompts included — never a forced `systemPrompt`, so pi keeps transcript deltas. Needs pi ≥ 0.86; older hosts skip wake-up injection with a one-time stderr log. Then recall per-prompt memories (prompts ≥ 10 chars) as a custom message; gated by settings (`recall_on_prompt` master switch; subagent children also need `children.recall`, default off) — the wake-up self-heal retry stays child-gated by the env hatch |
 | `agent_end`                   | Every `save_interval` exchanges (default 15), inject an in-session curation checkpoint that files key items via the MemPalace MCP tools; subagent children skip it unless `children.curation` is set (default off)                          |
 | `session_before_compact`      | Mine the session transcript before summarisation                                                                                                                                                                                            |
 | `session_shutdown`            | Background mine of the session transcript file on quit and session replacement (new/resume/fork; not reload)                                                                                                                                |
@@ -134,7 +134,7 @@ bun build index.ts --no-bundle
 ## Child gate & escape hatch
 
 Subagent children (`PI_SUBAGENT_CHILD=1`, fresh and fork) skip the wake-up
-fetch/append and `syncSkills` at `session_start` — and the
+fetch (so no `mempalace` prompt section) and `syncSkills` at `session_start` — and the
 `before_agent_start` self-heal retry — plus, by default, per-prompt recall
 and the `agent_end` curation checkpoint. Recall/curation for children are
 settings-driven (see [Settings](#settings)): `mempalace.children.recall` and

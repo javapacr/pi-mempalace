@@ -8,15 +8,17 @@
  * chain (Aug 8 backlog resolution).
  *
  * Active features (lifecycle hooks):
- * - session_start        — load wake-up context (L0+L1 ~940 tokens) into the
- *                          system prompt; reset conversation counter; parse
+ * - session_start        — load wake-up context (L0+L1 ~940 tokens); reset
+ *                          conversation counter; parse
  *                          mempalace settings (project .pi/settings.json over
  *                          profile, on all paths); sync skills; ensure MCP
  *                          registration — wake-up/sync/MCP SKIPPED for
  *                          subagent children (PI_SUBAGENT_CHILD=1) unless
  *                          the PI_MEMPALACE_CHILD_WAKEUP escape hatch applies
- * - before_agent_start   — recall per-prompt memories and inject them into
- *                          the system prompt; gated by settings
+ * - before_agent_start   — set the wake-up context as the `mempalace`
+ *                          prompt section every turn (pi >= 0.86; older
+ *                          hosts skip it); recall per-prompt memories as a
+ *                          custom message; recall gated by settings
  *                          (recall_on_prompt master switch; children also
  *                          need children.recall, default off) — wake-up
  *                          self-heal retry stays child-gated via the hatch

@@ -6,7 +6,10 @@
  *  - AC-A5: recording wakeUp stub — child env: 0 execute calls across
  *    session_start + 2 turns; parent env: exactly 1; hatch: 1.
  *  - AC-A2: under child env with a recall hit, before_agent_start returns
- *    the RECALL_CUSTOM_TYPE message and NO systemPrompt key.
+ *    the RECALL_CUSTOM_TYPE message and sets NO wake-up prompt section.
+ *  - Wake-up goes into systemPromptOptions.sections.mempalace on every turn
+ *    (short prompts included) and never as a returned systemPrompt; hosts
+ *    without sections (pi < 0.86) skip injection and log once.
  *  - A1 over-gate pin: child session_start still resolves the palace
  *    config (session_shutdown mining) while skipping wake-up.
  *  - A3 per-event hatch: flipping PI_MEMPALACE_CHILD_WAKEUP between turns
@@ -259,7 +262,12 @@ interface Harness {
 	recallHits: SearchResult;
 	setEnv(env: Record<string, string | undefined>): void;
 	driveSessionStart(mode?: string, sessionFile?: string | null): Promise<void>;
-	driveTurn(prompt?: string): Promise<Record<string, unknown> | undefined>;
+	driveTurn(
+		prompt?: string,
+		opts?: { noSections?: boolean },
+	): Promise<Record<string, unknown> | undefined>;
+	/** `systemPromptOptions.sections` of the last driven turn (undefined with noSections). */
+	lastSections: Record<string, string> | undefined;
 	driveBeforeCompact(sessionFile: string | null): Promise<void>;
 	driveAgentEnd(sessionFile: string | null): Promise<void>;
 	driveShutdown(reason: string, sessionFile: string | null): Promise<void>;
@@ -375,7 +383,8 @@ function buildHarness(recallHits: SearchResult): Harness {
 		ui: { notify: () => {} },
 	});
 
-	return {
+	const harness: Harness = {
+		lastSections: undefined,
 		state,
 		handlers,
 		wakeUpCalls,
@@ -409,15 +418,26 @@ function buildHarness(recallHits: SearchResult): Harness {
 		},
 		driveTurn: async (
 			prompt = "please remember the palindrome drawer for this task",
+			opts: { noSections?: boolean } = {},
 		) => {
 			const fns = handlers.get("before_agent_start") ?? [];
 			assert.ok(fns.length > 0, "before_agent_start handler registered");
+			// pi rebuilds systemPromptOptions from base every turn, so custom
+			// sections start empty each time; old pi (< 0.86) sends none at all.
+			const sections: Record<string, string> | undefined = opts.noSections
+				? undefined
+				: {};
+			harness.lastSections = sections;
+			const event = opts.noSections
+				? { prompt, systemPrompt: "BASE SYSTEM PROMPT" }
+				: {
+						prompt,
+						systemPrompt: "BASE SYSTEM PROMPT",
+						systemPromptOptions: { sections },
+					};
 			let last: Record<string, unknown> | undefined;
 			for (const fn of fns) {
-				const r = await fn(
-					{ prompt, systemPrompt: "BASE SYSTEM PROMPT" },
-					ctxBase(),
-				);
+				const r = await fn(event, ctxBase());
 				if (r && typeof r === "object") last = r as Record<string, unknown>;
 			}
 			return last;
@@ -453,6 +473,7 @@ function buildHarness(recallHits: SearchResult): Harness {
 			}
 		},
 	};
+	return harness;
 }
 
 beforeEach(async () => {
@@ -507,13 +528,19 @@ describe("session gating (AC-A5, A1 pins)", () => {
 		);
 	});
 
-	it("parent env: wakeUp.execute called exactly 1 time across session_start + 2 turns; systemPrompt keeps the wake-up block", async () => {
+	it("parent env: wakeUp.execute called exactly 1 time across session_start + 2 turns; wake-up lands in the mempalace section every turn", async () => {
 		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
 
 		await h.driveSessionStart();
 		const r1 = await h.driveTurn();
-		await h.driveTurn();
+		assert.deepEqual(h.lastSections, { mempalace: "WAKE-UP-CONTENT" });
+		const r2 = await h.driveTurn();
+		assert.deepEqual(
+			h.lastSections,
+			{ mempalace: "WAKE-UP-CONTENT" },
+			"section re-set on the next turn (pi rebuilds options from base)",
+		);
 
 		assert.equal(
 			h.wakeUpCalls.length,
@@ -521,11 +548,71 @@ describe("session gating (AC-A5, A1 pins)", () => {
 			"parent fetches wake-up exactly once (session_start); self-heal must not re-fire",
 		);
 		assert.equal(h.state.wakeUpContext, "WAKE-UP-CONTENT");
-		assert.ok(
-			typeof r1?.systemPrompt === "string" &&
-				r1.systemPrompt.includes("[MemPalace Session Context]"),
-			"parent system prompt still carries the wake-up block (A5 byte-invariance)",
+		for (const r of [r1, r2])
+			assert.ok(
+				!r || !("systemPrompt" in r),
+				"handler never forces a systemPrompt",
+			);
+	});
+
+	it("short prompt ('yes'): mempalace section still set, recall skipped (no flap)", async () => {
+		const h = buildHarness({
+			snippets: ["memory snippet about palindromes"],
+			wing: null,
+			palace: "/tmp/palace",
+		});
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+
+		await h.driveSessionStart();
+		const r = await h.driveTurn("yes");
+
+		assert.deepEqual(h.lastSections, { mempalace: "WAKE-UP-CONTENT" });
+		assert.deepEqual(h.recallCalls, [], "short prompt skips recall");
+		assert.equal(r, undefined, "no recall message, no systemPrompt");
+	});
+
+	it("no wake-up context: sections left untouched (no empty mempalace section)", async () => {
+		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
+		h.setEnv({ PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" });
+
+		await h.driveSessionStart();
+		await h.driveTurn();
+
+		assert.deepEqual(h.lastSections, {}, "gated child adds no section");
+	});
+
+	it("old pi host (no systemPromptOptions.sections): skips injection, no throw, logs once; recall still works", async () => {
+		const errors: string[] = [];
+		const orig = console.error;
+		console.error = ((...args: unknown[]) => {
+			errors.push(args.map(String).join(" "));
+		}) as typeof console.error;
+		let r1: Record<string, unknown> | undefined;
+		let r2: Record<string, unknown> | undefined;
+		try {
+			const h = buildHarness({
+				snippets: ["memory snippet about palindromes"],
+				wing: null,
+				palace: "/tmp/palace",
+			});
+			h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+			await h.driveSessionStart();
+			r1 = await h.driveTurn(undefined, { noSections: true });
+			r2 = await h.driveTurn("yes", { noSections: true });
+		} finally {
+			console.error = orig;
+		}
+		assert.ok(r1, "recall still returns a message");
+		assert.ok(!("systemPrompt" in r1), "no legacy systemPrompt fallback");
+		assert.equal(
+			(r1.message as { customType: string }).customType,
+			RECALL_CUSTOM_TYPE,
 		);
+		assert.equal(r2, undefined, "short turn on old pi returns nothing");
+		const lines = errors.filter((l) =>
+			l.includes("no systemPromptOptions.sections"),
+		);
+		assert.equal(lines.length, 1, "exactly one no-sections log line");
 	});
 
 	it("parent print mode: session_start skips, self-heal fetches once (parent print path unchanged)", async () => {
@@ -581,7 +668,7 @@ describe("session gating (AC-A5, A1 pins)", () => {
 });
 
 describe("recall gating (settings-driven; reworks the AC-A2 child-recall contract)", () => {
-	it("child env + defaults: recall never runs, no message, no systemPrompt", async () => {
+	it("child env + defaults: recall never runs, no message, no wake-up section", async () => {
 		const h = buildHarness({
 			snippets: ["memory snippet about palindromes"],
 			wing: null,
@@ -593,6 +680,7 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 		const r = await h.driveTurn();
 
 		assert.equal(r, undefined, "gated child with no wake-up returns nothing");
+		assert.deepEqual(h.lastSections, {}, "gated child sets no section");
 		assert.deepEqual(
 			h.recallCalls,
 			[],
@@ -600,7 +688,7 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 		);
 	});
 
-	it("child env + children.recall=true (project settings): recall message, no systemPrompt", async () => {
+	it("child env + children.recall=true (project settings): recall message, no wake-up section", async () => {
 		const h = buildHarness({
 			snippets: ["memory snippet about palindromes"],
 			wing: null,
@@ -613,7 +701,8 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 		const r = await h.driveTurn();
 
 		assert.ok(r, "handler returned a result");
-		assert.ok(!("systemPrompt" in r), "opted-in child still has no wake-up");
+		assert.ok(!("systemPrompt" in r), "no forced systemPrompt");
+		assert.deepEqual(h.lastSections, {}, "opted-in child still has no wake-up");
 		const message = r.message as
 			| { customType: string; content: string }
 			| undefined;
@@ -622,7 +711,7 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 		assert.ok(message.content.includes("palindrome"), "recall content carried");
 	});
 
-	it("parent env with the same recall hit: message AND systemPrompt (parent behavior preserved)", async () => {
+	it("parent env with the same recall hit: message AND mempalace section (parent behavior preserved)", async () => {
 		const h = buildHarness({
 			snippets: ["memory snippet about palindromes"],
 			wing: null,
@@ -638,10 +727,11 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 			(r.message as { customType: string }).customType,
 			RECALL_CUSTOM_TYPE,
 		);
-		assert.ok(
-			typeof r.systemPrompt === "string" &&
-				r.systemPrompt.includes("[MemPalace Session Context]"),
-			"parent keeps wake-up systemPrompt alongside recall",
+		assert.ok(!("systemPrompt" in r), "no forced systemPrompt");
+		assert.deepEqual(
+			h.lastSections,
+			{ mempalace: "WAKE-UP-CONTENT" },
+			"parent keeps the wake-up section alongside recall",
 		);
 	});
 
@@ -658,12 +748,12 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 		const r = await h.driveTurn();
 
 		assert.deepEqual(h.recallCalls, [], "master off must skip recall.execute");
-		assert.ok(
-			typeof r?.systemPrompt === "string" &&
-				r.systemPrompt.includes("[MemPalace Session Context]"),
+		assert.deepEqual(
+			h.lastSections,
+			{ mempalace: "WAKE-UP-CONTENT" },
 			"wake-up injection must survive the recall gate",
 		);
-		assert.equal(r.message, undefined, "no recall snippet under master off");
+		assert.equal(r, undefined, "no recall snippet under master off");
 	});
 });
 
