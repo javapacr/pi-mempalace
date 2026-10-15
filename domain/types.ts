@@ -48,6 +48,8 @@ export interface MempalaceSettings {
 	readonly saveInterval: number;
 	/** Master switch for before_agent_start recall; false disables it everywhere. Default true. */
 	readonly recallOnPrompt: boolean;
+	/** Settle diary nudge switch; false stops the after-run diary prompt. Default true. */
+	readonly diaryOnSettle: boolean;
 	/** Child feature gates. Both default false — primary-only by default. */
 	readonly children: MempalaceChildrenSettings;
 }
@@ -57,6 +59,7 @@ export const DEFAULT_MEMPALACE_SETTINGS: MempalaceSettings = {
 	palace: undefined,
 	saveInterval: SAVE_INTERVAL,
 	recallOnPrompt: true,
+	diaryOnSettle: true,
 	children: { recall: false, curation: false },
 };
 
@@ -106,6 +109,22 @@ export class SessionState {
 	 * on this snapshot. Null only before the first session_start.
 	 */
 	settings: MempalaceSettings | null = null;
+	/**
+	 * Set when a settle nudge starts its own run (D11). agent_end only reads
+	 * it — clearing there would let the nudge re-nudge its own settle (R7);
+	 * agent_settled reads and clears it.
+	 */
+	nudgeRunPending = false;
+	/** The current run already called the diary-write tool; detected at
+	 * tool_execution_start, cleared at settle (D11). */
+	diaryWrittenThisRun = false;
+	/** agent_end queued the curation checkpoint this run (D17): the checkpoint
+	 * prompt already asks for a diary write, so the settle yields the nudge to
+	 * it. Set on the checkpoint path, read-and-cleared at agent_settled. */
+	checkpointQueuedThisRun = false;
+	/** A pi-handoff continue is under way (D8/D9): raised by its bus events,
+	 * cleared by handoff_command_complete or the next interactive input. */
+	handoffInProgress = false;
 
 	reset(): void {
 		this.wakeUpContext = null;
@@ -117,5 +136,9 @@ export class SessionState {
 		this.hatchLogged = false;
 		this.noSectionsLogged = false;
 		this.settings = null;
+		this.nudgeRunPending = false;
+		this.diaryWrittenThisRun = false;
+		this.checkpointQueuedThisRun = false;
+		this.handoffInProgress = false;
 	}
 }

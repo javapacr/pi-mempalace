@@ -20,6 +20,8 @@ index.ts                          # Entry — wires up use cases + event registr
 │   ├── types.ts                  # Core types (SessionState, MempalaceConfig, etc.)
 │   ├── palace-router.ts          # Reads mempalace.yaml → palace/wing resolution
 │   ├── recall-parser.ts          # Parses search snippets into recall context
+│   ├── diary-nudge.ts            # Settle-nudge gate, diary-tool suffix match, nudge text (pure)
+│   ├── handoff-contract.ts       # pi-handoff shared-bus channel names (mirrored, no shared types)
 │   ├── curation-prompt.ts        # Builds curation subagent prompts
 │   └── skill-sync.ts             # Skill sync planning logic (pure)
 ├── infrastructure/               # External integrations
@@ -45,7 +47,10 @@ index.ts                          # Entry — wires up use cases + event registr
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `session_start`               | Load wake-up context (L0+L1 ~940 tokens); reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies                                         |
 | `before_agent_start`          | Set the wake-up context as the `mempalace` system-prompt section (`systemPromptOptions.sections.mempalace`, rendered `<mempalace>…</mempalace>`) on **every** turn, short prompts included — never a forced `systemPrompt`, so pi keeps transcript deltas. Needs pi ≥ 0.86; older hosts skip wake-up injection with a one-time stderr log. Then recall per-prompt memories (prompts ≥ 10 chars) as a custom message; gated by settings (`recall_on_prompt` master switch; subagent children also need `children.recall`, default off) — the wake-up self-heal retry stays child-gated by the env hatch |
-| `agent_end`                   | Every `save_interval` exchanges (default 15), inject an in-session curation checkpoint that files key items via the MemPalace MCP tools; subagent children skip it unless `children.curation` is set (default off)                          |
+| `agent_end`                   | Every `save_interval` exchanges (default 15), inject an in-session curation checkpoint that files key items via the MemPalace MCP tools; runs triggered by the diary nudge are excluded from the count and skip the checkpoint; subagent children skip it unless `children.curation` is set (default off)                          |
+| `agent_settled`               | After every settled run in interactive TUI mode, send one hidden diary nudge (`display:false`, `triggerTurn:true`, followUp): write one MemPalace diary entry if anything durable happened, else reply one short line and start no new work. Skips: the nudge's own run, aborted settles, subagent children, non-TUI modes (print/json/rpc), a handoff in progress, runs that already called the diary tool, runs whose `agent_end` just queued the curation checkpoint (its prompt already asks for a diary write, and on pi ≥ 1.2 a nudge run would carry that pending checkpoint into itself), and sessions with no tool ending in `mempalace_diary_write` registered — the diary-write tool must be registered directly (not reachable only through an MCP gateway). Known limitation: a diary write routed through the `mcp` gateway tool is not detected, so that run still gets a redundant nudge ([backlog 007](docs/backlog/007-mcp-gateway-diary-detection.md)). Off switch: `mempalace.diary_on_settle` |
+| `tool_execution_start` / `input` | Mark the current run as already-diarised when a tool name ends in `mempalace_diary_write`; the user's next interactive `input` closes the handoff-in-progress window below (nudge runs never fire `input`) |
+| pi.events `handoff_tool_start` / `tui_filled_handoff` / `handoff_command_complete` | pi-handoff's continue path opens the handoff-in-progress window (which keeps the settle nudge quiet until the handoff resolves) and `handoff_command_complete` closes it; payloads are ignored. The `/handoff` leg (`handoff_command_start{trigger:"handoff"}`) lands with W2 |
 | `session_before_compact`      | Mine the session transcript before summarisation                                                                                                                                                                                            |
 | `session_shutdown`            | Background mine of the session transcript file on quit and session replacement (new/resume/fork; not reload)                                                                                                                                |
 | pi.events `request-attention` | Listen for pi-claude-sandbox's sandbox-permission signal and surface it as a transient `ctx.ui.notify` toast (warning); no clear event exists — toast self-clears; payload stays in-process                                                 |
@@ -170,6 +175,7 @@ print one-shots included); changes apply to the next session.
 | `mempalace.palace`               | string       | unset   | Personal palace override in the env → settings → home-relative default chain; `""` counts as unset; routing currently consumes the profile leg only — the project palace value is parsed but not yet consumed (out-of-scope by plan) |
 | `mempalace.save_interval`        | positive int | `15`    | Exchanges between `agent_end` curation checkpoints                                                 |
 | `mempalace.recall_on_prompt`     | boolean      | `true`  | Master switch for `before_agent_start` recall — `false` disables recall everywhere                 |
+| `mempalace.diary_on_settle`      | boolean      | `true`  | Settle diary nudge — `false` stops the hidden after-run diary prompt                               |
 | `mempalace.children.recall`      | boolean      | `false` | Subagent children run the per-prompt recall                                                        |
 | `mempalace.children.curation`    | boolean      | `false` | Subagent children run the `agent_end` curation checkpoint                                          |
 
@@ -179,6 +185,7 @@ print one-shots included); changes apply to the next session.
   "palace": "",
   "save_interval": 15,
   "recall_on_prompt": true,
+  "diary_on_settle": true,
   "children": { "recall": false, "curation": false }
 }
 ```

@@ -20,6 +20,14 @@ import {
 	resolveChildWakeupGate,
 } from "../domain/child-gate";
 import { parseRequestAttentionPayload } from "../domain/attention";
+import {
+	isDiaryToolName,
+	hasDiaryTool,
+	shouldNudgeOnSettle,
+	SETTLE_NUDGE_CUSTOM_TYPE,
+	SETTLE_NUDGE_TEXT,
+} from "../domain/diary-nudge";
+import { HANDOFF_CHANNELS } from "../domain/handoff-contract";
 import { formatRecallContext } from "../domain/recall-parser";
 import type { WakeUpUseCase } from "../application/wake-up.usecase";
 import type { RecallUseCase } from "../application/recall.usecase";
@@ -69,6 +77,20 @@ function logNoSectionsOnce(state: SessionState): void {
 
 /** Prompt section name for the wake-up context; pi renders it as `<mempalace>…</mempalace>`. */
 export const WAKEUP_SECTION = "mempalace";
+
+/**
+ * Diary-write tool lookup across active ∪ all registered tools. Wrapped in
+ * try/catch → false: hosts without the tool getters (older pi, minimal
+ * harnesses) leave the diary nudges inert instead of throwing from a hook
+ * (D12, R3).
+ */
+function diaryToolRegistered(pi: ExtensionAPI): boolean {
+	try {
+		return hasDiaryTool(pi.getActiveTools(), pi.getAllTools());
+	} catch {
+		return false;
+	}
+}
 
 export function registerMempalaceEvents(
 	pi: ExtensionAPI,
@@ -151,6 +173,26 @@ export function registerMempalaceEvents(
 	pi.events.on("request-attention", (data) => {
 		const { message } = parseRequestAttentionPayload(data);
 		uiNotify?.(message, "warning");
+	});
+
+	// ── handoff bus — the "handoff in progress" window (D8/D9) ─────────────
+	// Raised on the continue-tool path: `handoff_tool_start` (pi-handoff#3)
+	// and, until that ships, `tui_filled_handoff` — the installed pi-handoff
+	// continue tool emits it right before auto-submit, and without it H1
+	// would start a diary run on the very settle the auto-submit presses
+	// Enter on (R5). `handoff_command_complete` fires on every exit path
+	// (E10) and closes the window; so does the next interactive input. The
+	// /handoff leg (`handoff_command_start{trigger:"handoff"}`) lands with
+	// W2. Payloads are ignored: bus listeners get no ctx and a malformed
+	// payload must not throw.
+	pi.events.on(HANDOFF_CHANNELS.toolStart, () => {
+		state.handoffInProgress = true;
+	});
+	pi.events.on(HANDOFF_CHANNELS.tuiFilledHandoff, () => {
+		state.handoffInProgress = true;
+	});
+	pi.events.on(HANDOFF_CHANNELS.commandComplete, () => {
+		state.handoffInProgress = false;
 	});
 
 	// ── Manual sync command ─────────────────────────────────────────────────
@@ -293,13 +335,20 @@ export function registerMempalaceEvents(
 
 	// ── agent_end — periodic LLM curation every settings.saveInterval exchanges ──
 	pi.on("agent_end", async (_event, ctx) => {
-		state.conversationCount++;
 		// Keep the transcript capture current — shutdown mines it. Refreshing
 		// here tracks a file that changed without a fresh session_start capture
 		// (e.g. a same-manager branch swap before teardown); without this
 		// refresh, shutdown mining would target a stale path in those flows.
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		if (sessionFile) state.sessionFile = sessionFile;
+		// Nudge-run bookkeeping (D11): a run started by the settle nudge leaves
+		// conversationCount untouched AND skips the checkpoint check — the
+		// return must come before the increment, because a count already on a
+		// multiple of save_interval would satisfy `count % interval === 0`
+		// again and re-send curation. Only a read: the flag is cleared at
+		// agent_settled, never here (R7).
+		if (state.nudgeRunPending) return;
+		state.conversationCount++;
 		// Settings-driven curation gate: children skip the checkpoint unless
 		// opted in via mempalace.children.curation; primary sessions always
 		// checkpoint, every settings.saveInterval exchanges. Same per-event env
@@ -330,6 +379,78 @@ export function registerMempalaceEvents(
 			},
 			{ triggerTurn: true, deliverAs: "nextTurn" },
 		);
+		// D17: this run's settle must yield the diary nudge to the checkpoint —
+		// the checkpoint prompt already asks for a diary write, and on pi ≥ 1.2
+		// a nudge run drains the pending nextTurn checkpoint into itself.
+		state.checkpointQueuedThisRun = true;
+	});
+
+	// ── tool_execution_start — "already diarised" mark for the settle gate ──
+	pi.on("tool_execution_start", (event) => {
+		if (isDiaryToolName(event.toolName)) state.diaryWrittenThisRun = true;
+	});
+
+	// ── agent_settled — one hidden diary nudge per qualifying settle (H1, D1) ──
+	// The nudge is a hidden followUp custom message; when the agent is idle
+	// pi defers the send until after these handlers and then runs it as its
+	// own agent turn (E14), so this handler only decides and sends.
+	pi.on("agent_settled", (event, ctx) => {
+		try {
+			// SAFETY: the locked dev types (0.87.1) type agent_settled as
+			// `{ type }` only, while the 1.1.0 runtime delivers `aborted`; the
+			// structural read keeps tsc green against both (D10). Absent →
+			// false, so an old host treats an aborted settle as a normal one.
+			const aborted = (event as { aborted?: unknown }).aborted === true;
+			// Snapshot then clear BEFORE any gate (D11): the nudge run's
+			// agent_end fires before its settle, so the pending flag must
+			// survive until here — and must not leak into the next run.
+			const nudgeRun = state.nudgeRunPending;
+			const diaryWrittenThisRun = state.diaryWrittenThisRun;
+			const checkpointQueued = state.checkpointQueuedThisRun;
+			state.nudgeRunPending = false;
+			state.diaryWrittenThisRun = false;
+			state.checkpointQueuedThisRun = false;
+			if (
+				!shouldNudgeOnSettle({
+					aborted,
+					mode: ctx.mode,
+					isChild: resolveChildWakeupGate(process.env).isChild,
+					enabled:
+						state.settings?.diaryOnSettle ??
+						DEFAULT_MEMPALACE_SETTINGS.diaryOnSettle,
+					handoffInProgress: state.handoffInProgress,
+					nudgeRun,
+					diaryWrittenThisRun,
+					checkpointQueued,
+					diaryToolRegistered: diaryToolRegistered(pi),
+				})
+			)
+				return;
+			// Set before the send: the run the nudge may start must count as a
+			// nudge run from its first agent_end (D11).
+			state.nudgeRunPending = true;
+			// Fire-and-forget by contract — pi owns the promise (E16).
+			pi.sendMessage(
+				{
+					customType: SETTLE_NUDGE_CUSTOM_TYPE,
+					content: SETTLE_NUDGE_TEXT,
+					display: false,
+				},
+				{ triggerTurn: true, deliverAs: "followUp" },
+			);
+		} catch {
+			// Never throw from a hook — a lost nudge self-heals at the next
+			// settle (R14).
+		}
+	});
+
+	// ── input — the user's next interactive submission closes the handoff window (D8) ──
+	// Extension commands (/handoff, /continue) never fire input and nudge runs
+	// bypass prompt() entirely (E15), so only a real user submission lands
+	// here. Returning nothing keeps the input unmodified — a returned result
+	// would transform or swallow it.
+	pi.on("input", (event) => {
+		if (event.source === "interactive") state.handoffInProgress = false;
 	});
 
 	// ── session_before_compact — mine transcript before it is summarised ──────

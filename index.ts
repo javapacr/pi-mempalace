@@ -25,7 +25,18 @@
  * - agent_end            — every save_interval (default 15) exchanges,
  *                          inject an in-session curation checkpoint;
  *                          subagent children skip it unless
- *                          children.curation is set (default off)
+ *                          children.curation is set (default off);
+ *                          runs started by the settle nudge never
+ *                          advance the exchange counter
+ * - agent_settled        — after every settled TUI run, send one hidden
+ *                          diary nudge (write one MemPalace diary entry
+ *                          if anything durable happened, else reply one
+ *                          short line and stop); gated by
+ *                          diary_on_settle, subagent-child env, run mode,
+ *                          a handoff in progress, an aborted settle, a
+ *                          run that already diarised, and diary-tool
+ *                          presence (suffix `mempalace_diary_write`,
+ *                          active ∪ all tools)
  * - session_before_compact — mine the session transcript before it is
  *                          summarised, preserving verbatim text in MemPalace
  * - session_shutdown     — background mine on quit and on session
