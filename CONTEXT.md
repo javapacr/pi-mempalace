@@ -37,7 +37,7 @@ The `SessionState` flag set when a settle nudge starts its own run; `agent_end` 
 _Avoid_: pending flag, nudge flag, nudge-pending state
 
 **handoff-in-progress flag**:
-The `SessionState` flag raised by pi-handoff's continue-path bus events (`handoff_tool_start`, `tui_filled_handoff`; `/handoff` in W2) and cleared by `handoff_command_complete` or the next interactive input; it silences the settle nudge while a handoff is under way.
+The `SessionState` flag raised by pi-handoff's continue-path bus events (`handoff_tool_start`, `tui_filled_handoff`; `/handoff` in W2) and cleared by `handoff_command_complete`, the next interactive input, or the `session_start` reset; it silences the settle nudge while a handoff is under way.
 _Avoid_: handoff state, handoff lock, handoff mode
 
 **diary tool**:

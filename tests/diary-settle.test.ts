@@ -22,6 +22,7 @@ import {
 	restoreEnv,
 	setupHermeticEnv,
 	writeProjectSettings,
+	type DiaryHarnessOptions,
 } from "./helpers/diary-harness";
 import {
 	SETTLE_NUDGE_CUSTOM_TYPE,
@@ -80,9 +81,24 @@ describe("settle nudge (W1)", () => {
 		await h.sessionStart();
 		await h.toolStart(DIARY_TOOL_NAME);
 
+		// The diary run ends before its settle: agent_end must NOT clear the
+		// mark — only the settle consumes it (D11, R7).
+		await h.agentEnd(SESSION_FILE);
 		await h.settle();
 
 		assert.equal(h.sentMessages.length, 0);
+		assert.equal(
+			h.state.diaryWrittenThisRun,
+			false,
+			"agent_settled clears the mark even on a skipped settle",
+		);
+
+		// A fresh run after that settle must nudge: the mark must not leak
+		// past the settle that consumed it (D11).
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+
+		assert.equal(h.sentMessages.length, 1);
 	});
 
 	it("H1 skips: no diary tool registered", async () => {
@@ -134,22 +150,96 @@ describe("settle nudge (W1)", () => {
 	});
 
 	it("H1 detects the diary tool by suffix in active or all tools", async () => {
-		const viaActive = buildDiaryHarness({
-			activeTools: ["unrelated_tool", DIARY_TOOL_NAME],
-		});
-		await viaActive.sessionStart();
-		await viaActive.agentEnd(SESSION_FILE);
-		await viaActive.settle();
-		assert.equal(viaActive.sentMessages.length, 1, "active-tools leg");
+		const matching: ReadonlyArray<
+			readonly [label: string, opts: DiaryHarnessOptions]
+		> = [
+			[
+				"this profile's prefix, via active tools",
+				{ activeTools: ["unrelated_tool", DIARY_TOOL_NAME] },
+			],
+			[
+				"another palace's prefix, via active tools",
+				{ activeTools: ["mempalace-work_mempalace_diary_write"] },
+			],
+			[
+				"no prefix at all, via active tools",
+				{ activeTools: ["mempalace_diary_write"] },
+			],
+			[
+				"no prefix at all, via all tools",
+				{ activeTools: [], allTools: [{ name: "mempalace_diary_write" }] },
+			],
+		];
+		for (const [label, opts] of matching) {
+			const h = buildDiaryHarness(opts);
+			await h.sessionStart();
+			await h.agentEnd(SESSION_FILE);
+			await h.settle();
+			assert.equal(h.sentMessages.length, 1, `${label} must match`);
+		}
 
-		const viaAll = buildDiaryHarness({
-			activeTools: ["unrelated_tool"],
-			allTools: [{ name: DIARY_TOOL_NAME }],
+		// Near-misses share the prefix but not the suffix — matching them
+		// would be the exact-name trap that killed pi-handoff's reminder (E8).
+		const nearMiss = buildDiaryHarness({
+			activeTools: ["mempalace_diary_writer"],
+			allTools: [{ name: "mempalace_diary_write_v2" }],
 		});
-		await viaAll.sessionStart();
-		await viaAll.agentEnd(SESSION_FILE);
-		await viaAll.settle();
-		assert.equal(viaAll.sentMessages.length, 1, "all-tools leg");
+		await nearMiss.sessionStart();
+		await nearMiss.agentEnd(SESSION_FILE);
+		await nearMiss.settle();
+		assert.equal(nearMiss.sentMessages.length, 0, "near-misses must not match");
+	});
+
+	it("H1 ignores non-diary tool calls", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.agentEnd(SESSION_FILE);
+		// Ordinary tool calls must not mark the run as already-diarised —
+		// only a name ending in mempalace_diary_write does (D11).
+		await h.toolStart("read");
+		await h.toolStart("bash");
+
+		await h.settle();
+
+		assert.equal(h.sentMessages.length, 1);
+	});
+
+	it("H1 stays quiet and does not throw without tool getters", async () => {
+		// Hosts without a usable tool registry (older pi, minimal harnesses)
+		// must leave the nudge inert, never throw from a hook (D12, R3).
+		for (const toolGetters of ["missing", "throw"] as const) {
+			const h = buildDiaryHarness({ toolGetters });
+			await h.sessionStart();
+			await h.agentEnd(SESSION_FILE);
+
+			await h.settle(); // must not throw
+
+			assert.equal(
+				h.sentMessages.length,
+				0,
+				`${toolGetters} getters read as no diary tool`,
+			);
+		}
+	});
+
+	it("H1 aborted guard tolerates absent and non-boolean aborted", async () => {
+		// Pre-1.1 host (D10): the event carries no aborted field at all — the
+		// structural guard must read that as a normal (non-aborted) settle.
+		const absent = buildDiaryHarness();
+		await absent.sessionStart();
+		await absent.agentEnd(SESSION_FILE);
+		await absent.settle({ omitAborted: true });
+
+		assert.equal(absent.sentMessages.length, 1, "absent aborted reads false");
+
+		// A non-boolean aborted must not read as aborted: the guard is the
+		// strict `=== true`, not a truthiness check (D10).
+		const nonBoolean = buildDiaryHarness();
+		await nonBoolean.sessionStart();
+		await nonBoolean.agentEnd(SESSION_FILE);
+		await nonBoolean.settle({ aborted: "true" });
+
+		assert.equal(nonBoolean.sentMessages.length, 1, '"true" is not aborted');
 	});
 
 	it("H1 quiet during handoff: handoff_tool_start", async () => {
@@ -198,11 +288,21 @@ describe("settle nudge (W1)", () => {
 		await h.agentEnd(SESSION_FILE);
 		h.emitBus(HANDOFF_CHANNELS.tuiFilledHandoff, {});
 
-		await h.input("rpc"); // non-interactive input must NOT close the window
+		const rpcResult = await h.input("rpc"); // non-interactive input must NOT close the window
+		assert.equal(
+			rpcResult,
+			undefined,
+			"the input handler must return nothing (a result would transform or swallow the input)",
+		);
 		await h.settle();
 		assert.equal(h.sentMessages.length, 0);
 
-		await h.input("interactive");
+		const interactiveResult = await h.input("interactive");
+		assert.equal(
+			interactiveResult,
+			undefined,
+			"the input handler must return nothing (a result would transform or swallow the input)",
+		);
 		await h.settle();
 		assert.equal(h.sentMessages.length, 1);
 	});
@@ -232,16 +332,23 @@ describe("settle nudge (W1)", () => {
 		await h.agentEnd(SESSION_FILE);
 		await h.settle(); // pending-nudge flag set
 		h.emitBus(HANDOFF_CHANNELS.toolStart, {}); // handoff window raised
+		await h.toolStart(DIARY_TOOL_NAME); // already-diarised mark
 		assert.ok(h.state.nudgeRunPending);
 		assert.ok(h.state.handoffInProgress);
+		assert.ok(h.state.diaryWrittenThisRun);
 
 		await h.sessionStart();
 
 		assert.equal(h.state.nudgeRunPending, false);
 		assert.equal(h.state.handoffInProgress, false);
-		// Both flags cleared: a stale pending flag would read this settle as
-		// a nudge run, a stale handoff flag would suppress it — either way
-		// the count would stay at 1 instead of 2.
+		assert.equal(
+			h.state.diaryWrittenThisRun,
+			false,
+			"the per-run diary mark resets too (D11)",
+		);
+		// All three flags cleared: a stale pending flag would read this settle as
+		// a nudge run, a stale handoff flag or a stale diary mark would suppress
+		// it — either way the count would stay at 1 instead of 2.
 		await h.settle();
 		assert.equal(h.sentMessages.length, 2);
 	});

@@ -88,12 +88,23 @@ export interface DiaryHarness {
 	readonly sentMessages: SentMessage[];
 	/** Fire a shared-bus event; listeners run synchronously (EventEmitter). */
 	emitBus(channel: string, payload?: unknown): void;
-	sessionStart(mode?: string): Promise<void>;
-	agentStart(): Promise<void>;
-	agentEnd(sessionFile: string | null): Promise<void>;
-	toolStart(toolName: string): Promise<void>;
-	settle(opts?: { aborted?: boolean; mode?: string }): Promise<void>;
-	input(source: "interactive" | "rpc" | "extension"): Promise<void>;
+	/** Each driver resolves with the last handler's return value, so tests
+	 *  can pin what a handler gives back to pi (e.g. `input` must return
+	 *  nothing — a returned value would transform or swallow the input). */
+	sessionStart(mode?: string): Promise<unknown>;
+	agentStart(): Promise<unknown>;
+	agentEnd(sessionFile: string | null): Promise<unknown>;
+	toolStart(toolName: string): Promise<unknown>;
+	settle(opts?: {
+		/** Value delivered on the event; pi ≥ 1.1 always sends a boolean
+		 *  (default false). Non-boolean values pass through untyped on purpose,
+		 *  so tests can probe the D10 structural guard. */
+		aborted?: unknown;
+		mode?: string;
+		/** Deliver the pre-1.1 event shape: no aborted field at all (D10). */
+		omitAborted?: boolean;
+	}): Promise<unknown>;
+	input(source: "interactive" | "rpc" | "extension"): Promise<unknown>;
 }
 
 export interface DiaryHarnessOptions {
@@ -101,6 +112,10 @@ export interface DiaryHarnessOptions {
 	activeTools?: ReadonlyArray<string>;
 	/** getAllTools() result; default: empty. */
 	allTools?: ReadonlyArray<{ readonly name: string }>;
+	/** Tool-getter availability: "missing" drops both getters (older pi,
+	 *  minimal harnesses), "throw" makes both throw — hosts without a usable
+	 *  registry must leave the diary nudges inert, never throw (D12/R3). */
+	toolGetters?: "missing" | "throw";
 	/** Mode used for every driver ctx; per-call overrides where offered. */
 	mode?: string;
 }
@@ -116,6 +131,20 @@ export function buildDiaryHarness(
 	const handlers = new Map<string, Handler[]>();
 	const bus = new EventEmitter();
 	const sentMessages: SentMessage[] = [];
+
+	const toolGetters: Record<string, () => unknown> =
+		opts.toolGetters === "throw"
+			? {
+					getActiveTools: () => {
+						throw new Error("tool registry unavailable");
+					},
+					getAllTools: () => {
+						throw new Error("tool registry unavailable");
+					},
+				}
+			: opts.toolGetters === "missing"
+				? {}
+				: { getActiveTools: () => activeTools, getAllTools: () => allTools };
 
 	const pi = {
 		on: (name: string, fn: Handler) => {
@@ -134,8 +163,7 @@ export function buildDiaryHarness(
 		) => {
 			sentMessages.push({ message, options });
 		},
-		getActiveTools: () => activeTools,
-		getAllTools: () => allTools,
+		...toolGetters,
 	} as unknown as ExtensionAPI;
 
 	const wakeUp = {
@@ -182,7 +210,9 @@ export function buildDiaryHarness(
 	async function drive(name: string, event: unknown, ctx: unknown) {
 		const fns = handlers.get(name) ?? [];
 		assert.ok(fns.length > 0, `${name} handler registered`);
-		for (const fn of fns) await fn(event, ctx);
+		let result: unknown;
+		for (const fn of fns) result = await fn(event, ctx);
+		return result;
 	}
 
 	return {
@@ -202,7 +232,11 @@ export function buildDiaryHarness(
 			),
 		settle: (settleOpts) => {
 			const event: Record<string, unknown> = { type: "agent_settled" };
-			if (settleOpts?.aborted !== undefined) event.aborted = settleOpts.aborted;
+			// pi ≥ 1.1 delivers `aborted: false` on every settle; pre-1.1 hosts
+			// omit the field entirely (D10) — omitAborted opts into that shape.
+			if (!settleOpts?.omitAborted) {
+				event.aborted = settleOpts?.aborted ?? false;
+			}
 			return drive("agent_settled", event, ctxFor(settleOpts?.mode));
 		},
 		input: (source) =>

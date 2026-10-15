@@ -242,6 +242,15 @@ describe("readMempalaceSettings — per-key validation", () => {
 
 		const s = await readMempalaceSettings(projectCwd());
 		assert.equal(s.diaryOnSettle, true, "project wins over the profile's false");
+
+		// Profile-only leg: the project file is silent on the key, so the
+		// profile's false must apply instead of the default.
+		await writeProjectSettings({});
+		assert.equal(
+			(await readMempalaceSettings(projectCwd())).diaryOnSettle,
+			false,
+			"project-absent falls through to the profile's false",
+		);
 	});
 
 	it("diary_on_settle must be boolean and falls through", async () => {
@@ -254,6 +263,14 @@ describe("readMempalaceSettings — per-key validation", () => {
 				`diary_on_settle=${JSON.stringify(raw)} must fall through`,
 			);
 		}
+		await writeProfileSettings({ diary_on_settle: false });
+		await writeProjectSettings({ diary_on_settle: "true" });
+		assert.equal(
+			(await readMempalaceSettings(projectCwd())).diaryOnSettle,
+			false,
+			"wrong-typed project value falls through to the profile's false",
+		);
+
 		await writeProjectSettings({ diary_on_settle: false });
 		assert.equal(
 			(await readMempalaceSettings(projectCwd())).diaryOnSettle,
