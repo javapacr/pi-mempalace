@@ -12,3 +12,4 @@ Small, individually shippable items — one file each under `docs/backlog/`.
 | [006](docs/backlog/006-test-tui-smoke-settle-handoff.md) | Live TUI smoke: settle nudge + pi-handoff continue path on pi 1.2.0 | open · P2 |
 | [007](docs/backlog/007-mcp-gateway-diary-detection.md) | Detect diary writes routed through the `mcp` gateway tool | open · P3 |
 | [008](docs/backlog/008-track-prompt-absorbed-by-nudge-run.md) | Decide whether to track user prompts absorbed by a nudge run | open · P3 |
+| [009](docs/backlog/009-curation-prompt-diary-tool-name.md) | Curation prompt names the diary tool by exact name, not suffix | open · P3 |

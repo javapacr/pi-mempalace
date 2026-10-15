@@ -10,8 +10,9 @@ been exercised end-to-end in a live TUI with the settle nudge attached.
 
 ## Task
 
-In a live interactive TUI on pi 1.2.0 with the installed pi-handoff
-(838ac31+): settle a real run and confirm the hidden nudge arrives and its own
+In a live interactive TUI on pi 1.2.0 with pi-handoff ≥ 838ac31
+(pi-handoff#3; the installed store copy is 5e611aa today, so update it
+first): settle a real run and confirm the hidden nudge arrives and its own
 run stays quiet; then drive a continue-tool handoff and confirm the settle
 stays silent through `tui_filled_handoff` and the auto-submit Enter press.
 
