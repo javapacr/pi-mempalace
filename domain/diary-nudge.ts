@@ -41,7 +41,7 @@ export function hasDiaryTool(
 	);
 }
 
-/** Inputs to the settle gate, gathered by the agent_settled handler (D3/D4/D8/D10/D11). */
+/** Inputs to the settle gate, gathered by the agent_settled handler (D3/D4/D8/D10/D11/D17). */
 export interface SettleNudgeInput {
 	/** pi ≥ 1.1 delivers `aborted` on agent_settled; absent reads as false (D10). */
 	readonly aborted: boolean;
@@ -57,6 +57,12 @@ export interface SettleNudgeInput {
 	readonly nudgeRun: boolean;
 	/** The run already wrote a diary entry. */
 	readonly diaryWrittenThisRun: boolean;
+	/** agent_end queued the curation checkpoint this run (D17). The checkpoint
+	 * prompt already asks for a diary write (domain/curation-prompt.ts step 4),
+	 * and on pi ≥ 1.2 a settle nudge's own run drains the pending nextTurn
+	 * checkpoint into itself — two instructions on one turn, and "Start no new
+	 * work" would let curation be skipped. Yield instead. */
+	readonly checkpointQueued: boolean;
 	/** A `*mempalace_diary_write` tool is registered (D3/R3). */
 	readonly diaryToolRegistered: boolean;
 }
@@ -64,7 +70,8 @@ export interface SettleNudgeInput {
 /**
  * The settle gate: nudge only a real, primary, enabled TUI run with a diary
  * tool available, that has not already diarised, is not the nudge's own run,
- * and is not inside a handoff (I1 gate list).
+ * is not inside a handoff, and did not just queue the curation checkpoint
+ * (I1 gate list).
  */
 export function shouldNudgeOnSettle(input: SettleNudgeInput): boolean {
 	return (
@@ -75,7 +82,8 @@ export function shouldNudgeOnSettle(input: SettleNudgeInput): boolean {
 		!input.isChild &&
 		!input.handoffInProgress &&
 		!input.nudgeRun &&
-		!input.diaryWrittenThisRun
+		!input.diaryWrittenThisRun &&
+		!input.checkpointQueued
 	);
 }
 

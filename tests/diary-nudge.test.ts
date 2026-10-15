@@ -70,6 +70,7 @@ describe("diary nudge gate (unit)", () => {
 			handoffInProgress: false,
 			nudgeRun: false,
 			diaryWrittenThisRun: false,
+			checkpointQueued: false,
 			diaryToolRegistered: true,
 		};
 		assert.equal(shouldNudgeOnSettle(base), true, "all-pass baseline nudges");
@@ -84,6 +85,7 @@ describe("diary nudge gate (unit)", () => {
 			["handoffInProgress", { ...base, handoffInProgress: true }],
 			["nudgeRun", { ...base, nudgeRun: true }],
 			["diaryWrittenThisRun", { ...base, diaryWrittenThisRun: true }],
+			["checkpointQueued", { ...base, checkpointQueued: true }],
 			["diaryToolRegistered", { ...base, diaryToolRegistered: false }],
 		];
 		for (const [field, flipped] of singleFlips) {

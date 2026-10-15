@@ -25,11 +25,11 @@ The upstream release signal that would end a persistent attention surface; pi-cl
 _Avoid_: dismiss event, release event
 
 **settle nudge**:
-The hidden custom message (`mempalace-diary-settle`) sent after every qualifying settled TUI run, asking for one diary entry if anything durable happened, a one-line skip otherwise, and no new work.
+The hidden custom message (`mempalace-diary-settle`) sent after every qualifying settled TUI run, asking for one diary entry if anything durable happened, a one-line skip otherwise, and no new work; it yields when that run's `agent_end` just queued the curation checkpoint, whose own prompt already asks for a diary write.
 _Avoid_: settle prompt, diary reminder (pi-handoff's removed feature), autosave (the curation checkpoint's customType)
 
 **nudge run**:
-The agent run a settle nudge starts via its `triggerTurn` delivery; it never advances the conversation count and never nudges again.
+The agent run a settle nudge starts via its `triggerTurn` delivery; it never advances the conversation count and never nudges again. A real user prompt submitted while it streams is absorbed into it — uncounted toward `save_interval`, and its settle sends no nudge.
 _Avoid_: follow-up run, self run, diary turn (that is the handoff nudge's run, W2)
 
 **pending-nudge flag**:

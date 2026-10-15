@@ -12,6 +12,8 @@
  *    next interactive input only (D8)
  *  - pending-nudge flag: read at agent_end, read-and-cleared at
  *    agent_settled (D11); session_start reset; curation cadence intact (I5)
+ *  - checkpoint yield: the settle after a run that just queued the curation
+ *    checkpoint sends no nudge (D17)
  */
 
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -333,9 +335,14 @@ describe("settle nudge (W1)", () => {
 		await h.settle(); // pending-nudge flag set
 		h.emitBus(HANDOFF_CHANNELS.toolStart, {}); // handoff window raised
 		await h.toolStart(DIARY_TOOL_NAME); // already-diarised mark
+		// checkpointQueuedThisRun never coexists with nudgeRunPending through the
+		// drivers — a queued checkpoint makes its own settle yield (D17) — so it
+		// is set directly; the point here is reset() coverage.
+		h.state.checkpointQueuedThisRun = true;
 		assert.ok(h.state.nudgeRunPending);
 		assert.ok(h.state.handoffInProgress);
 		assert.ok(h.state.diaryWrittenThisRun);
+		assert.ok(h.state.checkpointQueuedThisRun);
 
 		await h.sessionStart();
 
@@ -346,11 +353,82 @@ describe("settle nudge (W1)", () => {
 			false,
 			"the per-run diary mark resets too (D11)",
 		);
-		// All three flags cleared: a stale pending flag would read this settle as
-		// a nudge run, a stale handoff flag or a stale diary mark would suppress
-		// it — either way the count would stay at 1 instead of 2.
+		assert.equal(
+			h.state.checkpointQueuedThisRun,
+			false,
+			"the checkpoint-yield mark resets too (D17)",
+		);
+		// All four flags cleared: a stale pending flag would read this settle as
+		// a nudge run, a stale handoff flag, diary mark or checkpoint mark would
+		// suppress it — either way the count would stay at 1 instead of 2.
 		await h.settle();
 		assert.equal(h.sentMessages.length, 2);
+	});
+
+	it("H1 yields to a queued curation checkpoint", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+
+		// Real exchanges below the interval: every settle nudges — a run whose
+		// agent_end queued no checkpoint never yields (D17).
+		for (let i = 0; i < 14; i++) {
+			await h.agentEnd(SESSION_FILE);
+			await h.settle();
+			await h.agentEnd(SESSION_FILE); // the nudge's run
+			await h.settle();
+		}
+		assert.equal(h.state.conversationCount, 14);
+		assert.equal(
+			h.sentMessages.filter((m) => m.message.customType === SETTLE_NUDGE_CUSTOM_TYPE)
+				.length,
+			14,
+			"settles without a queued checkpoint still nudge",
+		);
+
+		// 15th real exchange: agent_end queues the curation checkpoint…
+		await h.agentEnd(SESSION_FILE);
+		assert.ok(
+			h.sentMessages.some(
+				(m) =>
+					m.message.customType === "mempalace-autosave" &&
+					m.options.deliverAs === "nextTurn",
+			),
+			"the 15th exchange queues the checkpoint",
+		);
+		// …so its settle sends NO nudge: on pi ≥ 1.2 a nudge run would drain the
+		// pending nextTurn checkpoint into itself, and "Start no new work" would
+		// fight the checkpoint's curation instruction (D17).
+		await h.settle();
+		assert.equal(
+			h.sentMessages.filter((m) => m.message.customType === SETTLE_NUDGE_CUSTOM_TYPE)
+				.length,
+			14,
+			"the settle after a queued checkpoint stays quiet",
+		);
+		assert.equal(
+			h.state.checkpointQueuedThisRun,
+			false,
+			"the yielding settle consumed the flag",
+		);
+
+		// The next real exchange's settle nudges again.
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(
+			h.sentMessages.filter((m) => m.message.customType === SETTLE_NUDGE_CUSTOM_TYPE)
+				.length,
+			15,
+			"the next real exchange nudges again",
+		);
+		// Cadence unchanged: the yield touches neither the count nor the
+		// checkpoint — 16 real exchanges, exactly one checkpoint (at 15).
+		assert.equal(h.state.conversationCount, 16, "real exchanges still count");
+		assert.equal(
+			h.sentMessages.filter((m) => m.message.customType === "mempalace-autosave")
+				.length,
+			1,
+			"one checkpoint per save_interval",
+		);
 	});
 
 	it("curation still fires every save_interval real exchanges with nudges interleaved", async () => {
@@ -359,12 +437,16 @@ describe("settle nudge (W1)", () => {
 
 		for (let i = 0; i < 15; i++) {
 			await h.agentEnd(SESSION_FILE); // real exchange
-			await h.settle(); // nudge fires, pending flag set
-			await h.agentEnd(SESSION_FILE); // the nudge's run
-			await h.settle(); // nudge run settles quietly
+			await h.settle(); // nudge fires, pending flag set — except the 15th: it yields to the queued checkpoint
+			await h.agentEnd(SESSION_FILE); // the nudge's run (a plain run after the yielding settle)
+			await h.settle(); // stays quiet — except after the yielding settle, where the next nudge fires
 		}
 
-		assert.equal(h.state.conversationCount, 15, "only real exchanges count");
+		assert.equal(
+			h.state.conversationCount,
+			16,
+			"only real exchanges count — the run after the yielding settle is one too",
+		);
 		const checkpoints = h.sentMessages.filter(
 			(m) => m.message.customType === "mempalace-autosave",
 		);
@@ -373,7 +455,11 @@ describe("settle nudge (W1)", () => {
 		const nudges = h.sentMessages.filter(
 			(m) => m.message.customType === SETTLE_NUDGE_CUSTOM_TYPE,
 		);
-		assert.equal(nudges.length, 15, "one nudge per real exchange");
+		assert.equal(
+			nudges.length,
+			15,
+			"14 settles nudge; the 15th yields to its checkpoint, and the settle after that run's trailing agent_end nudges in its place",
+		);
 	});
 
 	it("nudge-run agent_end leaves conversationCount unchanged and sends no checkpoint", async () => {

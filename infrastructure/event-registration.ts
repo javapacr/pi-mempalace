@@ -379,6 +379,10 @@ export function registerMempalaceEvents(
 			},
 			{ triggerTurn: true, deliverAs: "nextTurn" },
 		);
+		// D17: this run's settle must yield the diary nudge to the checkpoint —
+		// the checkpoint prompt already asks for a diary write, and on pi ≥ 1.2
+		// a nudge run drains the pending nextTurn checkpoint into itself.
+		state.checkpointQueuedThisRun = true;
 	});
 
 	// ── tool_execution_start — "already diarised" mark for the settle gate ──
@@ -402,8 +406,10 @@ export function registerMempalaceEvents(
 			// survive until here — and must not leak into the next run.
 			const nudgeRun = state.nudgeRunPending;
 			const diaryWrittenThisRun = state.diaryWrittenThisRun;
+			const checkpointQueued = state.checkpointQueuedThisRun;
 			state.nudgeRunPending = false;
 			state.diaryWrittenThisRun = false;
+			state.checkpointQueuedThisRun = false;
 			if (
 				!shouldNudgeOnSettle({
 					aborted,
@@ -415,6 +421,7 @@ export function registerMempalaceEvents(
 					handoffInProgress: state.handoffInProgress,
 					nudgeRun,
 					diaryWrittenThisRun,
+					checkpointQueued,
 					diaryToolRegistered: diaryToolRegistered(pi),
 				})
 			)

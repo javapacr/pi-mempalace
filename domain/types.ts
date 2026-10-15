@@ -118,6 +118,10 @@ export class SessionState {
 	/** The current run already called the diary-write tool; detected at
 	 * tool_execution_start, cleared at settle (D11). */
 	diaryWrittenThisRun = false;
+	/** agent_end queued the curation checkpoint this run (D17): the checkpoint
+	 * prompt already asks for a diary write, so the settle yields the nudge to
+	 * it. Set on the checkpoint path, read-and-cleared at agent_settled. */
+	checkpointQueuedThisRun = false;
 	/** A pi-handoff continue is under way (D8/D9): raised by its bus events,
 	 * cleared by handoff_command_complete or the next interactive input. */
 	handoffInProgress = false;
@@ -134,6 +138,7 @@ export class SessionState {
 		this.settings = null;
 		this.nudgeRunPending = false;
 		this.diaryWrittenThisRun = false;
+		this.checkpointQueuedThisRun = false;
 		this.handoffInProgress = false;
 	}
 }
