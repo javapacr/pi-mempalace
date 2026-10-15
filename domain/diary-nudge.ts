@@ -89,7 +89,33 @@ export function shouldNudgeOnSettle(input: SettleNudgeInput): boolean {
 
 /** customType of the hidden settle nudge (D16). */
 export const SETTLE_NUDGE_CUSTOM_TYPE = "mempalace-diary-settle";
-
 /** Settle nudge text (D16, used verbatim). */
 export const SETTLE_NUDGE_TEXT =
 	"[MemPalace diary check] This run has settled. If it produced anything durable — a decision, a discovery, a fix, a user preference — write one MemPalace diary entry now with the diary-write tool. If nothing is durable, or a diary entry for this work already exists, reply with one short line and stop. Start no new work.";
+
+/** Inputs to the handoff gate (D5/D12/R3), gathered by the handoff bus listeners. */
+export interface HandoffNudgeInput {
+	/** Subagent children never nudge. */
+	readonly isChild: boolean;
+	/** `mempalace.diary_on_handoff` (default true). */
+	readonly enabled: boolean;
+	/** A `*mempalace_diary_write` tool is registered (D3/R3). */
+	readonly diaryToolRegistered: boolean;
+}
+
+/**
+ * The handoff gate: a handoff nudge goes only to an enabled primary session
+ * with a diary-write tool available (I2/I3). No mode check — bus listeners
+ * get no ctx, and pi-handoff's `/handoff` and continue tool run where a
+ * snapshot will be taken.
+ */
+export function handoffNudgeAllowed(input: HandoffNudgeInput): boolean {
+	return !input.isChild && input.enabled && input.diaryToolRegistered;
+}
+
+/** customType of the hidden handoff nudge (D16). */
+export const HANDOFF_NUDGE_CUSTOM_TYPE = "mempalace-diary-handoff";
+
+/** Handoff nudge text (D16, used verbatim). */
+export const HANDOFF_NUDGE_TEXT =
+	"[MemPalace handoff diary] A handoff is about to snapshot this session. If the session produced anything durable that is not yet in your MemPalace diary, write one diary entry now with the diary-write tool. If nothing is durable, or a diary entry already exists, reply with one short line and stop. Start no new work, and do not call `continue` again — the handoff is already under way.";

@@ -37,8 +37,20 @@ The `SessionState` flag set when a settle nudge starts its own run; `agent_end` 
 _Avoid_: pending flag, nudge flag, nudge-pending state
 
 **handoff-in-progress flag**:
-The `SessionState` flag raised by pi-handoff's continue-path bus events (`handoff_tool_start`, `tui_filled_handoff`; `/handoff` in W2) and cleared by `handoff_command_complete`, the next interactive input, or the `session_start` reset; it silences the settle nudge while a handoff is under way.
+The `SessionState` flag raised by pi-handoff's bus events (`handoff_command_start` with `trigger:"handoff"`, `handoff_tool_start`, `tui_filled_handoff`) and cleared by `handoff_command_complete`, the next interactive input, or the `session_start` reset; it silences the settle nudge while a handoff is under way.
 _Avoid_: handoff state, handoff lock, handoff mode
+
+**handoff nudge**:
+The hidden custom message (`mempalace-diary-handoff`) sent when pi-handoff stages a handoff — from `/handoff`'s `handoff_command_start` (only `trigger:"handoff"`, with a registered settle waiter) or the continue tool's `handoff_tool_start` (deduped per session) — asking for one diary entry before the snapshot, a one-line skip otherwise, no new work, and never a second `continue`.
+_Avoid_: handoff prompt, pre-handoff reminder (pi-handoff's removed diary reminder)
+
+**settle waiter**:
+One of the resolvers collected from `/handoff`'s `waitUntil`; `agent_settled`, `session_start` and `session_shutdown` release them, so the next settle — aborted or not — unblocks pi-handoff, whose own 120s deadline stays the only clock.
+_Avoid_: wait promise, handoff timer, waitUntil handle
+
+**handoff contract**:
+The pi-handoff event shapes pi-mempalace mirrors in `domain/handoff-contract.ts`, comment-pinned to pi-handoff 838ac31: the channel names, the `handoff_command_start`/`handoff_tool_start`/`handoff_command_complete` payloads with their `trigger`, and the synchronous `waitUntil` registration rule.
+_Avoid_: event schema, sibling API, D6 shapes (the decision, not the thing)
 
 **diary tool**:
 The MemPalace diary-write MCP tool, matched by the `mempalace_diary_write` name suffix across active and all registered tools; it must be registered directly — a tool reachable only through an MCP gateway leaves both nudges inert.

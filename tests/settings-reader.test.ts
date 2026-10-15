@@ -6,8 +6,8 @@
  *  - profile path: PI_CODING_AGENT_DIR (absolute; relative resolves against
  *    ~/.pi); env unset → ~/.pi/agent/settings.json (HOME-redirected here)
  *  - per-key validation: "" palace unset, save_interval positive int,
- *    recall_on_prompt/diary_on_settle booleans, children.recall/curation
- *    booleans
+ *    recall_on_prompt/diary_on_settle/diary_on_handoff booleans,
+ *    children.recall/curation booleans
  *  - missing/malformed files and wrong-typed values → per-key defaults,
  *    never a throw
  */
@@ -74,6 +74,7 @@ describe("readMempalaceSettings — precedence", () => {
 			saveInterval: SAVE_INTERVAL,
 			recallOnPrompt: true,
 			diaryOnSettle: true,
+			diaryOnHandoff: true,
 			children: { recall: false, curation: false },
 		});
 	});
@@ -278,6 +279,55 @@ describe("readMempalaceSettings — per-key validation", () => {
 		);
 	});
 
+	it("diary_on_handoff defaults true and project wins over profile", async () => {
+		const defaultsOnly = await readMempalaceSettings(projectCwd());
+		assert.equal(
+			defaultsOnly.diaryOnHandoff,
+			true,
+			"absent everywhere → default true",
+		);
+
+		await writeProfileSettings({ diary_on_handoff: false });
+		await writeProjectSettings({ diary_on_handoff: true });
+
+		const s = await readMempalaceSettings(projectCwd());
+		assert.equal(s.diaryOnHandoff, true, "project wins over the profile's false");
+
+		// Profile-only leg: the project file is silent on the key, so the
+		// profile's false must apply instead of the default.
+		await writeProjectSettings({});
+		assert.equal(
+			(await readMempalaceSettings(projectCwd())).diaryOnHandoff,
+			false,
+			"project-absent falls through to the profile's false",
+		);
+	});
+
+	it("diary_on_handoff must be boolean and falls through", async () => {
+		for (const raw of ["true", 1, null]) {
+			await writeProjectSettings({ diary_on_handoff: raw });
+			const s = await readMempalaceSettings(projectCwd());
+			assert.equal(
+				s.diaryOnHandoff,
+				true,
+				`diary_on_handoff=${JSON.stringify(raw)} must fall through`,
+			);
+		}
+		await writeProfileSettings({ diary_on_handoff: false });
+		await writeProjectSettings({ diary_on_handoff: "true" });
+		assert.equal(
+			(await readMempalaceSettings(projectCwd())).diaryOnHandoff,
+			false,
+			"wrong-typed project value falls through to the profile's false",
+		);
+
+		await writeProjectSettings({ diary_on_handoff: false });
+		assert.equal(
+			(await readMempalaceSettings(projectCwd())).diaryOnHandoff,
+			false,
+		);
+	});
+
 	it("children keys must be booleans; each falls back independently", async () => {
 		await writeProjectSettings({
 			children: { recall: "yes", curation: 0 },
@@ -310,6 +360,7 @@ describe("readMempalaceSettings — per-key validation", () => {
 			saveInterval: SAVE_INTERVAL,
 			recallOnPrompt: true,
 			diaryOnSettle: true,
+			diaryOnHandoff: true,
 			children: { recall: false, curation: false },
 		});
 	});

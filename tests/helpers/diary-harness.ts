@@ -86,8 +86,10 @@ export interface SentMessage {
 export interface DiaryHarness {
 	readonly state: SessionState;
 	readonly sentMessages: SentMessage[];
-	/** Fire a shared-bus event; listeners run synchronously (EventEmitter). */
-	emitBus(channel: string, payload?: unknown): void;
+	/** Fire a shared-bus event; listeners run synchronously (EventEmitter).
+	 *  Returns the LAST listener's return value, so tests can pin that a bus
+	 *  listener stayed synchronous (returned undefined, never a Promise). */
+	emitBus(channel: string, payload?: unknown): unknown;
 	/** Each driver resolves with the last handler's return value, so tests
 	 *  can pin what a handler gives back to pi (e.g. `input` must return
 	 *  nothing — a returned value would transform or swallow the input). */
@@ -105,6 +107,8 @@ export interface DiaryHarness {
 		omitAborted?: boolean;
 	}): Promise<unknown>;
 	input(source: "interactive" | "rpc" | "extension"): Promise<unknown>;
+	/** Tear the session down (W2): emits session_shutdown with the reason. */
+	shutdown(reason: string): Promise<unknown>;
 }
 
 export interface DiaryHarnessOptions {
@@ -218,7 +222,16 @@ export function buildDiaryHarness(
 	return {
 		state,
 		sentMessages,
-		emitBus: (channel, payload) => bus.emit(channel, payload),
+		emitBus: (channel, payload) => {
+			// listeners() returns a snapshot copy — same order as emit, but the
+			// per-listener return values stay observable (emit returns boolean).
+			const listeners = bus.listeners(channel) as Array<
+				(payload: unknown) => unknown
+			>;
+			let result: unknown;
+			for (const listener of listeners) result = listener(payload);
+			return result;
+		},
 		sessionStart: (mode) =>
 			drive("session_start", {}, ctxFor(mode)),
 		agentStart: () => drive("agent_start", { type: "agent_start" }, ctxFor()),
@@ -241,5 +254,7 @@ export function buildDiaryHarness(
 		},
 		input: (source) =>
 			drive("input", { type: "input", text: "hello", source }, ctxFor()),
+		shutdown: (reason) =>
+			drive("session_shutdown", { type: "session_shutdown", reason }, ctxFor()),
 	};
 }

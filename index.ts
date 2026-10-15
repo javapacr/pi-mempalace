@@ -37,6 +37,18 @@
  *                          run that already diarised, and diary-tool
  *                          presence (suffix `mempalace_diary_write`,
  *                          active ∪ all tools)
+ * - handoff events       — pi-handoff paths send one hidden handoff diary
+ *                          nudge before the snapshot: /handoff
+ *                          (handoff_command_start, trigger "handoff")
+ *                          registers a settle waiter so pi-handoff waits
+ *                          for the diary turn (120s cap owned by
+ *                          pi-handoff); the continue tool's
+ *                          handoff_tool_start queues the same nudge as a
+ *                          followUp, deduped per session. Gated by
+ *                          diary_on_handoff, diary-tool presence and the
+ *                          child gate; both paths raise the
+ *                          handoff-in-progress window that keeps the
+ *                          settle nudge quiet
  * - session_before_compact — mine the session transcript before it is
  *                          summarised, preserving verbatim text in MemPalace
  * - session_shutdown     — background mine on quit and on session

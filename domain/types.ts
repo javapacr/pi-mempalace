@@ -50,6 +50,9 @@ export interface MempalaceSettings {
 	readonly recallOnPrompt: boolean;
 	/** Settle diary nudge switch; false stops the after-run diary prompt. Default true. */
 	readonly diaryOnSettle: boolean;
+	/** Handoff diary nudge switch; false stops the before-snapshot diary prompt
+	 * on both pi-handoff paths. Default true. */
+	readonly diaryOnHandoff: boolean;
 	/** Child feature gates. Both default false — primary-only by default. */
 	readonly children: MempalaceChildrenSettings;
 }
@@ -60,6 +63,7 @@ export const DEFAULT_MEMPALACE_SETTINGS: MempalaceSettings = {
 	saveInterval: SAVE_INTERVAL,
 	recallOnPrompt: true,
 	diaryOnSettle: true,
+	diaryOnHandoff: true,
 	children: { recall: false, curation: false },
 };
 
@@ -125,6 +129,19 @@ export class SessionState {
 	/** A pi-handoff continue is under way (D8/D9): raised by its bus events,
 	 * cleared by handoff_command_complete or the next interactive input. */
 	handoffInProgress = false;
+	/** A run is streaming (agent_start → agent_settled). Bus listeners get no
+	 * ctx and extension commands can run mid-stream, so run activity is
+	 * self-tracked (D13): a handoff nudge sets nudgeRunPending only when this
+	 * is false, i.e. when it starts a run of its own. */
+	agentRunActive = false;
+	/** This session already sent the handoff_tool_start nudge (D6 dedupe):
+	 * a repeated handoff_tool_start queues nothing more. Cleared only by
+	 * reset() — a cancelled staged handoff earns no second nudge (D6/R9). */
+	handoffToolNudged = false;
+	/** Resolvers of the promises registered with pi-handoff's /handoff
+	 * waitUntil (D15): agent_settled, session_start and session_shutdown
+	 * release them, so pi-handoff never waits past the diary turn or teardown. */
+	settleWaiters: Array<() => void> = [];
 
 	reset(): void {
 		this.wakeUpContext = null;
@@ -140,5 +157,8 @@ export class SessionState {
 		this.diaryWrittenThisRun = false;
 		this.checkpointQueuedThisRun = false;
 		this.handoffInProgress = false;
+		this.agentRunActive = false;
+		this.handoffToolNudged = false;
+		this.settleWaiters = [];
 	}
 }

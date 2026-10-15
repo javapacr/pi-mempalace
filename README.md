@@ -20,8 +20,8 @@ index.ts                          # Entry — wires up use cases + event registr
 │   ├── types.ts                  # Core types (SessionState, MempalaceConfig, etc.)
 │   ├── palace-router.ts          # Reads mempalace.yaml → palace/wing resolution
 │   ├── recall-parser.ts          # Parses search snippets into recall context
-│   ├── diary-nudge.ts            # Settle-nudge gate, diary-tool suffix match, nudge text (pure)
-│   ├── handoff-contract.ts       # pi-handoff shared-bus channel names (mirrored, no shared types)
+│   ├── diary-nudge.ts            # Settle/handoff nudge gates, diary-tool suffix match, nudge texts (pure)
+│   ├── handoff-contract.ts       # pi-handoff event contract: channels, payload shapes, runtime parser (mirrored)
 │   ├── curation-prompt.ts        # Builds curation subagent prompts
 │   └── skill-sync.ts             # Skill sync planning logic (pure)
 ├── infrastructure/               # External integrations
@@ -50,10 +50,34 @@ index.ts                          # Entry — wires up use cases + event registr
 | `agent_end`                   | Every `save_interval` exchanges (default 15), inject an in-session curation checkpoint that files key items via the MemPalace MCP tools; runs triggered by the diary nudge are excluded from the count and skip the checkpoint; subagent children skip it unless `children.curation` is set (default off)                          |
 | `agent_settled`               | After every settled run in interactive TUI mode, send one hidden diary nudge (`display:false`, `triggerTurn:true`, followUp): write one MemPalace diary entry if anything durable happened, else reply one short line and start no new work. Skips: the nudge's own run, aborted settles, subagent children, non-TUI modes (print/json/rpc), a handoff in progress, runs that already called the diary tool, runs whose `agent_end` just queued the curation checkpoint (its prompt already asks for a diary write, and on pi ≥ 1.2 a nudge run would carry that pending checkpoint into itself), and sessions with no tool ending in `mempalace_diary_write` registered — the diary-write tool must be registered directly (not reachable only through an MCP gateway). Known limitation: a diary write routed through the `mcp` gateway tool is not detected, so that run still gets a redundant nudge ([backlog 007](docs/backlog/007-mcp-gateway-diary-detection.md)). Off switch: `mempalace.diary_on_settle` |
 | `tool_execution_start` / `input` | Mark the current run as already-diarised when a tool name ends in `mempalace_diary_write`; the user's next interactive `input` closes the handoff-in-progress window below (nudge runs never fire `input`) |
-| pi.events `handoff_tool_start` / `tui_filled_handoff` / `handoff_command_complete` | pi-handoff's continue path opens the handoff-in-progress window (which keeps the settle nudge quiet until the handoff resolves) and `handoff_command_complete` closes it; payloads are ignored. The `/handoff` leg (`handoff_command_start{trigger:"handoff"}`) lands with W2 |
+| pi.events `handoff_command_start` | pi-handoff's `/handoff`, after its has-conversation gate: raise the handoff-in-progress window and send one hidden handoff nudge — only for `trigger:"handoff"` with a function `waitUntil`, which receives a promise resolving on the next `agent_settled` (aborted or not), registered synchronously before the listener returns. A bare `/continue` (`trigger:"continue"`), a missing/unknown trigger, or a missing `waitUntil` sends nothing (a missing `waitUntil` still raises the window). Same gates as the tool path below. Off switch: `mempalace.diary_on_handoff` |
+| pi.events `handoff_tool_start` / `tui_filled_handoff` / `handoff_command_complete` | pi-handoff's continue path: `handoff_tool_start` opens the handoff-in-progress window (which keeps the settle nudge quiet until the handoff resolves) and sends one hidden handoff nudge, deduped per session; `tui_filled_handoff` (the installed continue tool's legacy signal) only opens the window; `handoff_command_complete` closes it |
 | `session_before_compact`      | Mine the session transcript before summarisation                                                                                                                                                                                            |
 | `session_shutdown`            | Background mine of the session transcript file on quit and session replacement (new/resume/fork; not reload)                                                                                                                                |
 | pi.events `request-attention` | Listen for pi-claude-sandbox's sandbox-permission signal and surface it as a transient `ctx.ui.notify` toast (warning); no clear event exists — toast self-clears; payload stays in-process                                                 |
+
+### pi-handoff event contract
+
+pi-handoff emits on the shared bus; pi-mempalace mirrors the shapes in
+`domain/handoff-contract.ts`, comment-pinned to pi-handoff 838ac31
+(javapacr/pi-handoff#3):
+
+| Channel | When | Payload |
+| ------- | ---- | ------- |
+| `handoff_command_start` | `/handoff` passed its has-conversation gate, or bare `/continue` recovered a document | `{ goal, quickMode, trigger: "handoff" \| "continue", waitUntil?, timestamp }` |
+| `handoff_tool_start` | The `continue` tool staged `/continue`, emitted right after `tui_filled_handoff` | `{ goal, command: "/continue", timestamp }` |
+| `handoff_command_complete` | Either command finished (success, cancel or error) | `{ goal, quickMode, trigger, sessionTitle?, error?, timestamp }` |
+
+`quickMode` is legacy and mirrors `trigger === "continue"` — read `trigger`.
+A `/handoff` that fails the has-conversation gate emits neither start nor
+complete. pi-mempalace acts only on `trigger:"handoff"` and only when
+`waitUntil` is a function: it calls `waitUntil(promise)` synchronously inside
+the handler — a call after the emit returns is silently ignored — and the
+promise resolves on the next `agent_settled`, aborted or not. `/handoff`
+awaits registered promises (`Promise.allSettled`) before its snapshot, capped
+at 120s by pi-handoff: pi-mempalace sets no timer of its own; at the cap the
+handoff proceeds, and Esc cancels the handoff while the diary turn continues
+in the current session.
 
 ## Dormant Maintenance Tools
 
@@ -176,6 +200,7 @@ print one-shots included); changes apply to the next session.
 | `mempalace.save_interval`        | positive int | `15`    | Exchanges between `agent_end` curation checkpoints                                                 |
 | `mempalace.recall_on_prompt`     | boolean      | `true`  | Master switch for `before_agent_start` recall — `false` disables recall everywhere                 |
 | `mempalace.diary_on_settle`      | boolean      | `true`  | Settle diary nudge — `false` stops the hidden after-run diary prompt                               |
+| `mempalace.diary_on_handoff`     | boolean      | `true`  | Handoff diary nudge — `false` stops the hidden before-snapshot diary prompt on both pi-handoff paths |
 | `mempalace.children.recall`      | boolean      | `false` | Subagent children run the per-prompt recall                                                        |
 | `mempalace.children.curation`    | boolean      | `false` | Subagent children run the `agent_end` curation checkpoint                                          |
 
@@ -186,6 +211,7 @@ print one-shots included); changes apply to the next session.
   "save_interval": 15,
   "recall_on_prompt": true,
   "diary_on_settle": true,
+  "diary_on_handoff": true,
   "children": { "recall": false, "curation": false }
 }
 ```
