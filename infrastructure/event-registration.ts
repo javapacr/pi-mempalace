@@ -230,26 +230,6 @@ export function registerMempalaceEvents(
 		uiNotify?.(message, "warning");
 	});
 
-	// ── handoff bus — the "handoff in progress" window (D8/D9) ─────────────
-	// Raised on the continue-tool path: `handoff_tool_start` (pi-handoff#3)
-	// and, until that ships, `tui_filled_handoff` — the installed pi-handoff
-	// continue tool emits it right before auto-submit, and without it H1
-	// would start a diary run on the very settle the auto-submit presses
-	// Enter on (R5). `handoff_command_complete` fires on every exit path
-	// (E10) and closes the window; so does the next interactive input. The
-	// /handoff leg (`handoff_command_start{trigger:"handoff"}`) lands with
-	// W2. Payloads are ignored: bus listeners get no ctx and a malformed
-	// payload must not throw.
-	pi.events.on(HANDOFF_CHANNELS.toolStart, () => {
-		state.handoffInProgress = true;
-	});
-	pi.events.on(HANDOFF_CHANNELS.tuiFilledHandoff, () => {
-		state.handoffInProgress = true;
-	});
-	pi.events.on(HANDOFF_CHANNELS.commandComplete, () => {
-		state.handoffInProgress = false;
-	});
-
 	// ── Manual sync command ─────────────────────────────────────────────────
 	pi.registerCommand("mempalace-skills-sync", {
 		description:
@@ -447,14 +427,18 @@ export function registerMempalaceEvents(
 
 	// ── handoff bus — the "handoff in progress" window + the H2 nudge (D8/D9/D13–D16) ──
 	// Both handoff paths open the window that keeps the settle nudge quiet
-	// (until handoff_command_complete or the next interactive input) and send
-	// one hidden diary nudge before pi-handoff snapshots:
+	// and send one hidden diary nudge before pi-handoff snapshots. The window
+	// closes on `handoff_command_complete`, which fires on every exit path
+	// (E10), and on the next interactive input (the input handler below).
 	//  - `handoff_command_start{trigger:"handoff"}` — the /handoff leg below:
 	//    registers a settle waiter with the payload's waitUntil, synchronously.
 	//  - `handoff_tool_start` — the continue tool staged /continue: the nudge
 	//    is a followUp in the streaming run, deduped per session (D6).
-	// `tui_filled_handoff` keeps raising the window only: it is the installed
-	// pi-handoff's continue-tool signal (D9), best-effort, not a contract.
+	// `tui_filled_handoff` keeps raising the window only: the installed
+	// pi-handoff continue tool emits it right before auto-submit, and without
+	// it H1 would start a diary run on the very settle the auto-submit presses
+	// Enter on (R5) — best-effort, not a contract (D9). Window payloads are
+	// ignored: bus listeners get no ctx and a malformed payload must not throw.
 	pi.events.on(HANDOFF_CHANNELS.toolStart, () => {
 		try {
 			// Presence itself stages a continue — payloads carry no trigger,
@@ -496,7 +480,9 @@ export function registerMempalaceEvents(
 			sendHandoffNudge();
 		} catch {
 			// Never throw from a hook — a lost nudge self-heals at the next
-			// handoff or settle; the wait still resolves on the next settle.
+			// handoff or settle. An already-registered wait is still released
+			// on the next settle or session teardown (D15); a lost registration
+			// is bounded by pi-handoff's 120s cap.
 		}
 	});
 

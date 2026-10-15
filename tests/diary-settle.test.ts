@@ -295,11 +295,12 @@ describe("settle nudge (W1)", () => {
 
 		await h.settle();
 
-		assert.ok(
-			h.sentMessages.some(
+		assert.equal(
+			h.sentMessages.filter(
 				(m) => m.message.customType === SETTLE_NUDGE_CUSTOM_TYPE,
-			),
-			"H1 nudges again once the handoff completes",
+			).length,
+			1,
+			"exactly one settle nudge once the handoff completes",
 		);
 	});
 

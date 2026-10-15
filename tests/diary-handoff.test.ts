@@ -144,6 +144,11 @@ describe("handoff nudge (W2)", () => {
 			await resolvedAfterFlush(abortedCollector.promises[0]),
 			"an aborted settle resolves the wait (D15)",
 		);
+		assert.equal(
+			h.state.settleWaiters.length,
+			0,
+			"releaseSettleWaiters splices — no resolver survives a settle",
+		);
 
 		// So does a normal one.
 		const cleanCollector = waitCollector();
@@ -156,6 +161,7 @@ describe("handoff nudge (W2)", () => {
 			await resolvedAfterFlush(cleanCollector.promises[0]),
 			"a normal settle resolves the wait",
 		);
+		assert.equal(h.state.settleWaiters.length, 0);
 	});
 
 	it("H2 /handoff wait is released on session_shutdown and session_start", async () => {
@@ -236,6 +242,31 @@ describe("handoff nudge (W2)", () => {
 			false,
 			"only trigger:handoff raises the window (D8)",
 		);
+	});
+
+	it("H2 contract: waitUntil is invoked as a method on the payload", () => {
+		const h = buildDiaryHarness();
+		// pi-handoff's collector reads `this` (Gotcha): a detached
+		// `const fn = payload.waitUntil; fn(p)` would lose it and throw inside
+		// the listener — the nudge would be lost with it.
+		const payload = {
+			goal: null,
+			quickMode: false,
+			trigger: "handoff",
+			timestamp: 1,
+			seen: 0,
+			waitUntil(this: { seen: number }, _promise: Promise<unknown>): void {
+				this.seen++;
+			},
+		};
+		h.emitBus(HANDOFF_CHANNELS.commandStart, payload);
+
+		assert.equal(
+			payload.seen,
+			1,
+			"called as payload.waitUntil(p), so this is the payload",
+		);
+		assert.equal(h.sentMessages.length, 1, "the nudge path ran without a throw");
 	});
 
 	it("H2 tool: handoff_tool_start sends one hidden followUp nudge", async () => {
@@ -389,6 +420,72 @@ describe("handoff nudge (W2)", () => {
 
 		assert.equal(h.state.conversationCount, 4, "counted once, as usual");
 		assert.equal(h.sentMessages.length, 1, "the handoff nudge; H1 stays quiet");
+	});
+
+	it("H2 run tracking: agent_settled clears agentRunActive", async () => {
+		await writeProjectSettings({ diary_on_settle: false }); // isolate from H1
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.agentStart();
+		await h.agentEnd(SESSION_FILE); // count 1
+		await h.settle(); // D13: this settle must clear agentRunActive
+
+		// Idle at /handoff → the nudge starts a run of its own (D13)…
+		const collector = waitCollector();
+		h.emitBus(
+			HANDOFF_CHANNELS.commandStart,
+			commandStartPayload("handoff", collector.waitUntil),
+		);
+		assert.ok(
+			h.state.nudgeRunPending,
+			"the nudge owns its run only because agentRunActive was cleared",
+		);
+
+		// …so that run's agent_end must not advance the count (D11): it stays
+		// at the first run's count.
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.state.conversationCount, 1, "the diary run never counts");
+	});
+
+	it("H2 run tracking: a fresh session re-arms the tool-path dedupe", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.agentStart();
+		h.emitBus(HANDOFF_CHANNELS.toolStart, toolStartPayload());
+		await h.settle();
+
+		// session_start's reset() clears handoffToolNudged — the dedupe is per
+		// session, not per process (D6/R9).
+		await h.sessionStart();
+		await h.agentStart();
+		h.emitBus(HANDOFF_CHANNELS.toolStart, toolStartPayload());
+
+		assert.equal(
+			h.sentMessages.filter(
+				(m) => m.message.customType === HANDOFF_NUDGE_CUSTOM_TYPE,
+			).length,
+			2,
+			"exactly one nudge per session",
+		);
+	});
+
+	it("H2 run tracking: a mid-stream /handoff does not claim its own run", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		// Extension commands can run mid-stream (E15): stage a run first.
+		await h.agentStart();
+
+		const collector = waitCollector();
+		h.emitBus(
+			HANDOFF_CHANNELS.commandStart,
+			commandStartPayload("handoff", collector.waitUntil),
+		);
+
+		// The nudge is a followUp inside the running run (R8/D13)…
+		assert.equal(h.state.nudgeRunPending, false);
+		assert.equal(collector.promises.length, 1, "the wait still registers");
+		assert.equal(h.sentMessages.length, 1, "…and the nudge still fires");
 	});
 
 	it("H1 quiet during handoff: handoff_command_start trigger handoff", async () => {
