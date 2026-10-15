@@ -23,3 +23,23 @@ _Avoid_: notify handle, ui context
 **clear event**:
 The upstream release signal that would end a persistent attention surface; pi-claude-sandbox emits none today.
 _Avoid_: dismiss event, release event
+
+**settle nudge**:
+The hidden custom message (`mempalace-diary-settle`) sent after every qualifying settled TUI run, asking for one diary entry if anything durable happened, a one-line skip otherwise, and no new work.
+_Avoid_: settle prompt, diary reminder (pi-handoff's removed feature), autosave (the curation checkpoint's customType)
+
+**nudge run**:
+The agent run a settle nudge starts via its `triggerTurn` delivery; it never advances the conversation count and never nudges again.
+_Avoid_: follow-up run, self run, diary turn (that is the handoff nudge's run, W2)
+
+**pending-nudge flag**:
+The `SessionState` flag set when a settle nudge starts its own run; `agent_end` only reads it, `agent_settled` reads and clears it — clearing at `agent_end` would loop the nudge onto its own settle.
+_Avoid_: pending flag, nudge flag, nudge-pending state
+
+**handoff-in-progress flag**:
+The `SessionState` flag raised by pi-handoff's continue-path bus events (`handoff_tool_start`, `tui_filled_handoff`; `/handoff` in W2) and cleared by `handoff_command_complete` or the next interactive input; it silences the settle nudge while a handoff is under way.
+_Avoid_: handoff state, handoff lock, handoff mode
+
+**diary tool**:
+The MemPalace diary-write MCP tool, matched by the `mempalace_diary_write` name suffix across active and all registered tools; it must be registered directly — a tool reachable only through an MCP gateway leaves both nudges inert.
+_Avoid_: exact tool-name match, diary-write gateway

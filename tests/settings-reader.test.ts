@@ -6,7 +6,8 @@
  *  - profile path: PI_CODING_AGENT_DIR (absolute; relative resolves against
  *    ~/.pi); env unset → ~/.pi/agent/settings.json (HOME-redirected here)
  *  - per-key validation: "" palace unset, save_interval positive int,
- *    recall_on_prompt boolean, children.recall/curation booleans
+ *    recall_on_prompt/diary_on_settle booleans, children.recall/curation
+ *    booleans
  *  - missing/malformed files and wrong-typed values → per-key defaults,
  *    never a throw
  */
@@ -72,6 +73,7 @@ describe("readMempalaceSettings — precedence", () => {
 			palace: undefined,
 			saveInterval: SAVE_INTERVAL,
 			recallOnPrompt: true,
+			diaryOnSettle: true,
 			children: { recall: false, curation: false },
 		});
 	});
@@ -227,6 +229,38 @@ describe("readMempalaceSettings — per-key validation", () => {
 		);
 	});
 
+	it("diary_on_settle defaults true and project wins over profile", async () => {
+		const defaultsOnly = await readMempalaceSettings(projectCwd());
+		assert.equal(
+			defaultsOnly.diaryOnSettle,
+			true,
+			"absent everywhere → default true",
+		);
+
+		await writeProfileSettings({ diary_on_settle: false });
+		await writeProjectSettings({ diary_on_settle: true });
+
+		const s = await readMempalaceSettings(projectCwd());
+		assert.equal(s.diaryOnSettle, true, "project wins over the profile's false");
+	});
+
+	it("diary_on_settle must be boolean and falls through", async () => {
+		for (const raw of ["true", 1, null]) {
+			await writeProjectSettings({ diary_on_settle: raw });
+			const s = await readMempalaceSettings(projectCwd());
+			assert.equal(
+				s.diaryOnSettle,
+				true,
+				`diary_on_settle=${JSON.stringify(raw)} must fall through`,
+			);
+		}
+		await writeProjectSettings({ diary_on_settle: false });
+		assert.equal(
+			(await readMempalaceSettings(projectCwd())).diaryOnSettle,
+			false,
+		);
+	});
+
 	it("children keys must be booleans; each falls back independently", async () => {
 		await writeProjectSettings({
 			children: { recall: "yes", curation: 0 },
@@ -258,6 +292,7 @@ describe("readMempalaceSettings — per-key validation", () => {
 			palace: undefined,
 			saveInterval: SAVE_INTERVAL,
 			recallOnPrompt: true,
+			diaryOnSettle: true,
 			children: { recall: false, curation: false },
 		});
 	});
