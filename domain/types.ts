@@ -53,6 +53,9 @@ export interface MempalaceSettings {
 	/** Handoff diary nudge switch; false stops the before-snapshot diary prompt
 	 * on both pi-handoff paths. Default true. */
 	readonly diaryOnHandoff: boolean;
+	/** Minimum tool calls a run must make before its settle nudge may fire
+	 * (D18); non-negative integer, default 3; 0 restores every-settle. */
+	readonly diarySettleMinToolCalls: number;
 	/** Child feature gates. Both default false — primary-only by default. */
 	readonly children: MempalaceChildrenSettings;
 }
@@ -64,6 +67,7 @@ export const DEFAULT_MEMPALACE_SETTINGS: MempalaceSettings = {
 	recallOnPrompt: true,
 	diaryOnSettle: true,
 	diaryOnHandoff: true,
+	diarySettleMinToolCalls: 3,
 	children: { recall: false, curation: false },
 };
 
@@ -126,6 +130,24 @@ export class SessionState {
 	 * prompt already asks for a diary write, so the settle yields the nudge to
 	 * it. Set on the checkpoint path, read-and-cleared at agent_settled. */
 	checkpointQueuedThisRun = false;
+	/** Tool calls accumulated since the last diary write or diary nudge (D18,
+	 * amended): incremented by tool_execution_start and compared against
+	 * diarySettleMinToolCalls at agent_settled. Survives a settle the gate
+	 * skips for any other reason (below threshold, aborted, handoff window),
+	 * so short runs add up. Reset to 0 by a diary-tool call, by the settle
+	 * that sends the settle nudge, by the settle of a nudge run or of a run
+	 * that queued the curation checkpoint, and by a handoff nudge. */
+	toolCallsSinceDiary = 0;
+	/** A curation checkpoint is queued and no run has started since (D21):
+	 * set by the agent_end that queues it, cleared at the next agent_start
+	 * (any run start drains the pending nextTurn message). Chooses the
+	 * checkpoint-variant handoff nudge text; survives the settle that clears
+	 * checkpointQueuedThisRun. */
+	checkpointPending = false;
+	/** One-shot drift warning flag (D20): pi-handoff sent a
+	 * handoff_command_start this session could not act on; warn once, then
+	 * stay silent. Cleared by reset() — the warning is per session. */
+	handoffDriftWarned = false;
 	/** A pi-handoff continue is under way (D8/D9): raised by its bus events,
 	 * cleared by handoff_command_complete or the next interactive input. */
 	handoffInProgress = false;
@@ -142,6 +164,10 @@ export class SessionState {
 	 * waitUntil (D15): agent_settled, session_start and session_shutdown
 	 * release them, so pi-handoff never waits past the diary turn or teardown. */
 	settleWaiters: Array<() => void> = [];
+	/** Unref'd self-bound timer for the settle waiters (D19): releases them
+	 * after HANDOFF_WAIT_SELF_BOUND_MS when no settle arrives. Cleared on
+	 * every release path; null = no timer armed. */
+	settleWaiterTimer: ReturnType<typeof setTimeout> | null = null;
 
 	reset(): void {
 		this.wakeUpContext = null;
@@ -155,10 +181,19 @@ export class SessionState {
 		this.settings = null;
 		this.nudgeRunPending = false;
 		this.diaryWrittenThisRun = false;
+		this.toolCallsSinceDiary = 0;
 		this.checkpointQueuedThisRun = false;
+		this.checkpointPending = false;
+		this.handoffDriftWarned = false;
 		this.handoffInProgress = false;
 		this.agentRunActive = false;
 		this.handoffToolNudged = false;
 		this.settleWaiters = [];
+		// Clear the self-bound timer BEFORE nulling it (D19): a quitting pi
+		// must not wait out the 125s on a reset that orphans the waiters.
+		if (this.settleWaiterTimer !== null) {
+			clearTimeout(this.settleWaiterTimer);
+			this.settleWaiterTimer = null;
+		}
 	}
 }

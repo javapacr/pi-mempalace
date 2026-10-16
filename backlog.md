@@ -13,4 +13,4 @@ Small, individually shippable items — one file each under `docs/backlog/`.
 | [007](docs/backlog/007-mcp-gateway-diary-detection.md) | Detect diary writes routed through the `mcp` gateway tool | open · P3 |
 | [008](docs/backlog/008-track-prompt-absorbed-by-nudge-run.md) | Decide whether to track user prompts absorbed by a nudge run | open · P3 |
 | [009](docs/backlog/009-curation-prompt-diary-tool-name.md) | Curation prompt names the diary tool by exact name, not suffix | open · P3 |
-| [010](docs/backlog/010-handoff-nudge-drains-curation-checkpoint.md) | Idle `/handoff` nudge run drains a pending curation checkpoint (W2.R2) | open · P3 |
+| [010](docs/backlog/010-handoff-nudge-drains-curation-checkpoint.md) | Idle `/handoff` nudge run drains a pending curation checkpoint (W2.R2) | done — W3 (#6): checkpoint-variant nudge |

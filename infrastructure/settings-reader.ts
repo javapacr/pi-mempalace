@@ -14,7 +14,8 @@
  * Never throws: a missing/unreadable/malformed file contributes nothing, and
  * a wrong-typed value falls through to the other file, then to
  * DEFAULT_MEMPALACE_SETTINGS ("" palace counts as unset; save_interval must
- * be a positive integer; boolean keys must be booleans).
+ * be a positive integer; boolean keys must be booleans;
+ * diary_settle_min_tool_calls must be a non-negative integer).
  */
 
 import { readFile } from "node:fs/promises";
@@ -36,6 +37,7 @@ interface ParsedSettingsFile {
 	recallOnPrompt?: boolean;
 	diaryOnSettle?: boolean;
 	diaryOnHandoff?: boolean;
+	diarySettleMinToolCalls?: number;
 	children?: Partial<MempalaceChildrenSettings>;
 }
 
@@ -94,6 +96,12 @@ function parseSettingsFile(
 			typeof m.diary_on_settle === "boolean" ? m.diary_on_settle : undefined,
 		diaryOnHandoff:
 			typeof m.diary_on_handoff === "boolean" ? m.diary_on_handoff : undefined,
+		diarySettleMinToolCalls:
+			typeof m.diary_settle_min_tool_calls === "number" &&
+			Number.isInteger(m.diary_settle_min_tool_calls) &&
+			m.diary_settle_min_tool_calls >= 0
+				? m.diary_settle_min_tool_calls
+				: undefined,
 	};
 	const children = m.children;
 	if (children && typeof children === "object" && !Array.isArray(children)) {
@@ -135,6 +143,10 @@ export async function readMempalaceSettings(
 			project.diaryOnHandoff ??
 			user.diaryOnHandoff ??
 			defaults.diaryOnHandoff,
+		diarySettleMinToolCalls:
+			project.diarySettleMinToolCalls ??
+			user.diarySettleMinToolCalls ??
+			defaults.diarySettleMinToolCalls,
 		children: {
 			recall:
 				project.children?.recall ??

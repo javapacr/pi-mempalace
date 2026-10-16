@@ -495,4 +495,187 @@ describe("settle nudge (W1)", () => {
 		assert.equal(h.sentMessages.length, 1, "only the nudge, no checkpoint");
 		assert.equal(h.sentMessages[0].message.customType, SETTLE_NUDGE_CUSTOM_TYPE);
 	});
+
+	it("H1 threshold: a settle below the default three tool calls sends nothing, reaching it nudges", async () => {
+		// "default" keeps the real settings value (3) — the harness override
+		// is what lets the W1/W2 tests above settle tool-free runs (I7).
+		const h = buildDiaryHarness({ settleMinToolCalls: "default" });
+		await h.sessionStart();
+
+		// Two tool calls < 3: the qualifying settle stays quiet (D18).
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.sentMessages.length, 0, "two calls sit below the default");
+
+		// The third call — in the next run — crosses the threshold.
+		await h.toolStart("edit");
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.sentMessages.length, 1, "the third call crosses the threshold");
+		assert.equal(h.sentMessages[0].message.customType, SETTLE_NUDGE_CUSTOM_TYPE);
+	});
+
+	it("H1 threshold: zero nudges a tool-free run", async () => {
+		const h = buildDiaryHarness({ settleMinToolCalls: 0 });
+		await h.sessionStart();
+		await h.agentEnd(SESSION_FILE);
+
+		await h.settle();
+
+		assert.equal(h.sentMessages.length, 1, "0 restores every-settle (D18)");
+	});
+
+	it("H1 threshold: short runs add up across skipped settles", async () => {
+		const h = buildDiaryHarness({ settleMinToolCalls: "default" }); // 3
+		await h.sessionStart();
+
+		// Three one-call runs: the first two settles sit below the threshold
+		// and keep the count; the third reaches it (D18, amended — W3.R3).
+		for (let run = 1; run <= 3; run++) {
+			await h.toolStart("read");
+			await h.agentEnd(SESSION_FILE);
+			await h.settle();
+			assert.equal(
+				h.sentMessages.length,
+				run === 3 ? 1 : 0,
+				`run ${run}: ${run} accumulated call(s)`,
+			);
+		}
+		// A tool-free run in between adds nothing but loses nothing either.
+		const g = buildDiaryHarness({ settleMinToolCalls: "default" });
+		await g.sessionStart();
+		await g.toolStart("read");
+		await g.toolStart("bash");
+		await g.agentEnd(SESSION_FILE);
+		await g.settle();
+		await g.agentEnd(SESSION_FILE); // tool-free
+		await g.settle();
+		assert.equal(g.state.toolCallsSinceDiary, 2, "the tool-free settle kept the count");
+		assert.equal(g.sentMessages.length, 0);
+	});
+
+	it("H1 threshold: an aborted or handoff-window settle keeps the count", async () => {
+		const h = buildDiaryHarness({ settleMinToolCalls: "default" });
+		await h.sessionStart();
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.toolStart("edit");
+		await h.agentEnd(SESSION_FILE);
+		await h.settle({ aborted: true });
+		assert.equal(h.sentMessages.length, 0, "aborted settles never nudge");
+		assert.equal(h.state.toolCallsSinceDiary, 3, "the aborted settle kept the count");
+
+		// The next qualifying settle — even of a tool-free run — collects it.
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.sentMessages.length, 1);
+		assert.equal(h.sentMessages[0].message.customType, SETTLE_NUDGE_CUSTOM_TYPE);
+
+		// Handoff window: the tui_filled_handoff leg raises it WITHOUT a nudge,
+		// so nothing zeroes the count there; the windowed settle must keep it.
+		const w = buildDiaryHarness({ settleMinToolCalls: "default" });
+		await w.sessionStart();
+		await w.toolStart("read");
+		await w.toolStart("bash");
+		await w.toolStart("edit");
+		await w.agentEnd(SESSION_FILE);
+		w.emitBus(HANDOFF_CHANNELS.tuiFilledHandoff, {});
+		await w.settle();
+		assert.equal(w.sentMessages.length, 0, "handoff-window settles never nudge");
+		assert.equal(w.state.toolCallsSinceDiary, 3, "the handoff-window settle kept the count");
+		w.emitBus(HANDOFF_CHANNELS.commandComplete, { trigger: "continue" });
+		await w.agentEnd(SESSION_FILE);
+		await w.settle();
+		assert.equal(w.sentMessages.length, 1, "the carried count nudges once the window closes");
+	});
+
+	it("H1 threshold: the settle nudge starts the count over", async () => {
+		const h = buildDiaryHarness({ settleMinToolCalls: "default" }); // 3
+		await h.sessionStart();
+
+		// Run 1: exactly three calls → nudge.
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.toolStart("edit");
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.sentMessages.length, 1);
+		assert.equal(h.state.toolCallsSinceDiary, 0, "the nudge send zeroed the count");
+
+		// The nudge's own run makes a stray non-diary call and settles quiet
+		// (D11); its calls are the diary turn and do not carry.
+		await h.toolStart("read");
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.state.toolCallsSinceDiary, 0, "the nudge run's settle zeroed the count");
+
+		// Run 2: two more calls. A count carried over from before the nudge
+		// would see 5 ≥ 3 and nudge again.
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.state.toolCallsSinceDiary, 2);
+		assert.equal(h.sentMessages.length, 1, "nothing carries past the nudge");
+	});
+
+	it("H1 threshold: a diary write starts the count over", async () => {
+		const h = buildDiaryHarness({ settleMinToolCalls: "default" }); // 3
+		await h.sessionStart();
+
+		// Two calls, then the diary write: the write zeroes the count and the
+		// already-diarised settle stays quiet (D11).
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.toolStart(DIARY_TOOL_NAME);
+		assert.equal(h.state.toolCallsSinceDiary, 0, "the diary write zeroed the count");
+		await h.toolStart("edit"); // work after the write counts again
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.sentMessages.length, 0);
+		assert.equal(h.state.toolCallsSinceDiary, 1, "only the post-write call carries");
+
+		// Two more calls reach 3 accumulated since the write.
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+		assert.equal(h.sentMessages.length, 1);
+	});
+
+	it("H1 threshold: a handoff nudge or a queued checkpoint starts the count over", async () => {
+		// Handoff nudge: /handoff asks for the diary turn itself (D18, amended).
+		const h = buildDiaryHarness({ settleMinToolCalls: "default" });
+		await h.sessionStart();
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		h.emitBus(HANDOFF_CHANNELS.commandStart, {
+			goal: null,
+			quickMode: false,
+			trigger: "handoff",
+			timestamp: Date.now(),
+			waitUntil: () => {},
+		});
+		assert.equal(h.sentMessages.length, 1, "the handoff nudge went out");
+		assert.equal(h.state.toolCallsSinceDiary, 0, "the handoff nudge zeroed the count");
+
+		// Checkpoint: the 15th exchange queues curation, whose prompt asks
+		// for the diary write; its settle yields (D17) and zeroes the count.
+		const c = buildDiaryHarness({ settleMinToolCalls: "default" });
+		await c.sessionStart();
+		for (let i = 0; i < 14; i++) await c.agentEnd(SESSION_FILE);
+		await c.toolStart("read");
+		await c.toolStart("bash");
+		await c.toolStart("edit");
+		await c.toolStart("write");
+		await c.agentEnd(SESSION_FILE); // 15th → checkpoint queued
+		await c.settle();
+		assert.ok(
+			c.sentMessages.every((m) => m.message.customType === "mempalace-autosave"),
+			"the checkpoint settle yields the settle nudge",
+		);
+		assert.equal(c.state.toolCallsSinceDiary, 0, "the checkpoint settle zeroed the count");
+	});
 });

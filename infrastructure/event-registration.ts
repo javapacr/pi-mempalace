@@ -29,9 +29,12 @@ import {
 	SETTLE_NUDGE_TEXT,
 	HANDOFF_NUDGE_CUSTOM_TYPE,
 	HANDOFF_NUDGE_TEXT,
+	HANDOFF_CHECKPOINT_NUDGE_TEXT,
 } from "../domain/diary-nudge";
 import {
 	HANDOFF_CHANNELS,
+	HANDOFF_DRIFT_WARNING,
+	HANDOFF_WAIT_SELF_BOUND_MS,
 	parseHandoffCommandStart,
 } from "../domain/handoff-contract";
 import { formatRecallContext } from "../domain/recall-parser";
@@ -105,6 +108,13 @@ function diaryToolRegistered(pi: ExtensionAPI): boolean {
  * rejections (E12), but resolving keeps the contract trivial.
  */
 function releaseSettleWaiters(state: SessionState): void {
+	// D19: disarm the self-bound first — every release path (settle, teardown,
+	// the bound itself) must leave no timer behind for a quitting pi to wait
+	// out, and the next registered batch must arm a fresh one.
+	if (state.settleWaiterTimer !== null) {
+		clearTimeout(state.settleWaiterTimer);
+		state.settleWaiterTimer = null;
+	}
 	const waiters = state.settleWaiters.splice(0);
 	for (const resolve of waiters) {
 		try {
@@ -142,11 +152,19 @@ export function registerMempalaceEvents(
 	// (R8), which then counts once, as usual.
 	const sendHandoffNudge = (): void => {
 		if (!state.agentRunActive) state.nudgeRunPending = true;
+		// A handoff nudge is a diary nudge: the activity count starts over
+		// (D18, amended).
+		state.toolCallsSinceDiary = 0;
+		// D21: while a curation checkpoint is still queued, the run this nudge
+		// joins will drain it — point at the checkpoint instead of contradicting
+		// it with "Start no new work". Same customType as the standard text.
 		// Fire-and-forget by contract — pi owns the promise (E16).
 		pi.sendMessage(
 			{
 				customType: HANDOFF_NUDGE_CUSTOM_TYPE,
-				content: HANDOFF_NUDGE_TEXT,
+				content: state.checkpointPending
+					? HANDOFF_CHECKPOINT_NUDGE_TEXT
+					: HANDOFF_NUDGE_TEXT,
 				display: false,
 			},
 			{ triggerTurn: true, deliverAs: "followUp" },
@@ -418,11 +436,22 @@ export function registerMempalaceEvents(
 		// the checkpoint prompt already asks for a diary write, and on pi ≥ 1.2
 		// a nudge run drains the pending nextTurn checkpoint into itself.
 		state.checkpointQueuedThisRun = true;
+		// D21: the checkpoint stays PENDING past the settle — until the next
+		// agent_start drains it — so a /handoff in between picks the
+		// checkpoint-variant nudge text.
+		state.checkpointPending = true;
 	});
 
-	// ── tool_execution_start — "already diarised" mark for the settle gate ──
+	// ── tool_execution_start — "already diarised" mark + activity count (D18) ──
+	// The count accumulates across runs until a diary write or a diary nudge
+	// (D18, amended): a diary-tool call is the write, so it zeroes the count.
 	pi.on("tool_execution_start", (event) => {
-		if (isDiaryToolName(event.toolName)) state.diaryWrittenThisRun = true;
+		if (isDiaryToolName(event.toolName)) {
+			state.diaryWrittenThisRun = true;
+			state.toolCallsSinceDiary = 0;
+			return;
+		}
+		state.toolCallsSinceDiary++;
 	});
 
 	// ── handoff bus — the "handoff in progress" window + the H2 nudge (D8/D9/D13–D16) ──
@@ -464,6 +493,24 @@ export function registerMempalaceEvents(
 	pi.events.on(HANDOFF_CHANNELS.commandStart, (data) => {
 		try {
 			const { trigger, register } = parseHandoffCommandStart(data);
+			// D20 drift detection: an unrecognised shape means pi-handoff predates
+			// the W2 contract (no trigger) or lost its waitUntil — the /handoff
+			// diary turn cannot work there. Warn once per session, gated like the
+			// nudge (H2 off or gates failing → it is not our turn to complain);
+			// runs before the early returns below so it can never delay or
+			// reorder the synchronous register() call.
+			const drifted =
+				trigger === null || (trigger === "handoff" && register === null);
+			if (drifted && !state.handoffDriftWarned && handoffNudgePermitted()) {
+				state.handoffDriftWarned = true;
+				try {
+					// Optional chain: before session_start nothing is captured —
+					// the flag still latches so the first notify is the only one.
+					uiNotify?.(HANDOFF_DRIFT_WARNING, "warning");
+				} catch {
+					// A failed toast must not throw from a hook.
+				}
+			}
 			if (trigger !== "handoff") return; // bare /continue, missing or unknown trigger: nothing (D6/R2)
 			// Raise the window BEFORE the gates: D8 keeps the settle nudge quiet
 			// during a handoff even when H2 is switched off, and D14 keeps it
@@ -477,12 +524,23 @@ export function registerMempalaceEvents(
 				state.settleWaiters.push(resolve);
 			});
 			register(settled);
+			// D19 self-bound: one unref'd timer per batch of waiters — if no
+			// settle ever arrives (pi-handoff's 120s cap failing too), the waits
+			// still release after 125s instead of hanging the handoff.
+			if (state.settleWaiterTimer === null) {
+				const timer = setTimeout(
+					() => releaseSettleWaiters(state),
+					HANDOFF_WAIT_SELF_BOUND_MS,
+				);
+				timer.unref?.();
+				state.settleWaiterTimer = timer;
+			}
 			sendHandoffNudge();
 		} catch {
 			// Never throw from a hook — a lost nudge self-heals at the next
 			// handoff or settle. An already-registered wait is still released
-			// on the next settle or session teardown (D15); a lost registration
-			// is bounded by pi-handoff's 120s cap.
+			// on the next settle, the self-bound, or session teardown (D15/D19);
+			// a lost registration is bounded by pi-handoff's 120s cap.
 		}
 	});
 
@@ -492,6 +550,10 @@ export function registerMempalaceEvents(
 	// pending-nudge flag only when this is false (it starts a run of its own).
 	pi.on("agent_start", () => {
 		state.agentRunActive = true;
+		// D21: any run start drains the pending nextTurn checkpoint into the
+		// run — a handoff nudge from here on describes a turn whose checkpoint
+		// is no longer queued, so the standard text applies again.
+		state.checkpointPending = false;
 	});
 
 	// ── agent_settled — one hidden diary nudge per qualifying settle (H1, D1) ──
@@ -510,15 +572,21 @@ export function registerMempalaceEvents(
 			// structural read keeps tsc green against both (D10). Absent →
 			// false, so an old host treats an aborted settle as a normal one.
 			const aborted = (event as { aborted?: unknown }).aborted === true;
-			// Snapshot then clear BEFORE any gate (D11): the nudge run's
+			// Snapshot then clear BEFORE any gate (D11/D18): the nudge run's
 			// agent_end fires before its settle, so the pending flag must
 			// survive until here — and must not leak into the next run.
 			const nudgeRun = state.nudgeRunPending;
 			const diaryWrittenThisRun = state.diaryWrittenThisRun;
 			const checkpointQueued = state.checkpointQueuedThisRun;
+			const toolCallsSinceDiary = state.toolCallsSinceDiary;
 			state.nudgeRunPending = false;
 			state.diaryWrittenThisRun = false;
 			state.checkpointQueuedThisRun = false;
+			// The activity count is NOT per run (D18, amended): it carries
+			// across settles the gate skips, so short runs add up. A nudge run
+			// is the diary turn and a queued checkpoint asks for the diary write,
+			// so both start the count over; the nudge send below does too.
+			if (nudgeRun || checkpointQueued) state.toolCallsSinceDiary = 0;
 			if (
 				!shouldNudgeOnSettle({
 					aborted,
@@ -531,6 +599,10 @@ export function registerMempalaceEvents(
 					nudgeRun,
 					diaryWrittenThisRun,
 					checkpointQueued,
+					toolCallsSinceDiary,
+					minToolCalls:
+						state.settings?.diarySettleMinToolCalls ??
+						DEFAULT_MEMPALACE_SETTINGS.diarySettleMinToolCalls,
 					diaryToolRegistered: diaryToolRegistered(pi),
 				})
 			)
@@ -538,6 +610,7 @@ export function registerMempalaceEvents(
 			// Set before the send: the run the nudge may start must count as a
 			// nudge run from its first agent_end (D11).
 			state.nudgeRunPending = true;
+			state.toolCallsSinceDiary = 0;
 			// Fire-and-forget by contract — pi owns the promise (E16).
 			pi.sendMessage(
 				{

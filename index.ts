@@ -28,7 +28,10 @@
  *                          children.curation is set (default off);
  *                          runs started by the settle nudge never
  *                          advance the exchange counter
- * - agent_settled        — after every settled TUI run, send one hidden
+ * - agent_settled        — after every settled TUI run once at least
+ *                          diary_settle_min_tool_calls (default 3) tool
+ *                          calls accumulated since the last diary write
+ *                          or nudge, send one hidden
  *                          diary nudge (write one MemPalace diary entry
  *                          if anything durable happened, else reply one
  *                          short line and stop); gated by
@@ -42,7 +45,7 @@
  *                          (handoff_command_start, trigger "handoff")
  *                          registers a settle waiter so pi-handoff waits
  *                          for the diary turn (120s cap owned by
- *                          pi-handoff); the continue tool's
+ *                          pi-handoff, 125s self-bound here); the continue tool's
  *                          handoff_tool_start queues the same nudge as a
  *                          followUp, deduped per session. Gated by
  *                          diary_on_handoff, diary-tool presence and the

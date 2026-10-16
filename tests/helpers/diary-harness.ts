@@ -16,7 +16,7 @@ import { EventEmitter } from "node:events";
 import assert from "node:assert/strict";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerMempalaceEvents } from "../../infrastructure/event-registration";
-import { SessionState } from "../../domain/types";
+import { DEFAULT_MEMPALACE_SETTINGS, SessionState } from "../../domain/types";
 import type { WakeUpUseCase } from "../../application/wake-up.usecase";
 import type { RecallUseCase } from "../../application/recall.usecase";
 import type { CurationUseCase } from "../../application/curation.usecase";
@@ -122,6 +122,14 @@ export interface DiaryHarnessOptions {
 	toolGetters?: "missing" | "throw";
 	/** Mode used for every driver ctx; per-call overrides where offered. */
 	mode?: string;
+	/** Activity threshold forced into state.settings (D18) — after
+	 *  construction AND after every sessionStart, since session_start
+	 *  replaces the settings snapshot. Default 0, so the W1/W2 tests keep
+	 *  exercising their own gates on tool-free runs; "default" leaves the
+	 *  real settings value (3) in place for the W3 threshold tests. */
+	settleMinToolCalls?: number | "default";
+	/** ctx.ui.notify capture — the surface of the drift warning (D20). */
+	notify?: (msg: string, level?: string) => void;
 }
 
 export function buildDiaryHarness(
@@ -204,11 +212,26 @@ export function buildDiaryHarness(
 		skillInstaller,
 	);
 
+	const notify = opts.notify ?? (() => {});
+
+	// Keep the forced threshold in place across the whole harness life: applied
+	// now (tests that never sessionStart) and re-applied after every
+	// sessionStart (session_start replaces state.settings from the files).
+	const forcedThreshold = opts.settleMinToolCalls ?? 0;
+	const forceSettleThreshold = (): void => {
+		if (forcedThreshold === "default") return;
+		state.settings = {
+			...(state.settings ?? DEFAULT_MEMPALACE_SETTINGS),
+			diarySettleMinToolCalls: forcedThreshold,
+		};
+	};
+	forceSettleThreshold();
+
 	const ctxFor = (mode?: string, sessionFile: string | null = null) => ({
 		mode: mode ?? defaultMode,
 		cwd: scratchDir,
 		sessionManager: { getSessionFile: () => sessionFile },
-		ui: { notify: () => {} },
+		ui: { notify },
 	});
 
 	async function drive(name: string, event: unknown, ctx: unknown) {
@@ -232,8 +255,11 @@ export function buildDiaryHarness(
 			for (const listener of listeners) result = listener(payload);
 			return result;
 		},
-		sessionStart: (mode) =>
-			drive("session_start", {}, ctxFor(mode)),
+		sessionStart: async (mode) => {
+			const result = await drive("session_start", {}, ctxFor(mode));
+			forceSettleThreshold();
+			return result;
+		},
 		agentStart: () => drive("agent_start", { type: "agent_start" }, ctxFor()),
 		agentEnd: (sessionFile) =>
 			drive("agent_end", { type: "agent_end" }, ctxFor(undefined, sessionFile)),
