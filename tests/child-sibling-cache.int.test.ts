@@ -14,21 +14,33 @@
  *    [MemPalace Session Context], tasks differ.
  *  - AC-A4: child + PI_MEMPALACE_CHILD_WAKEUP=1 → marker present (also the
  *    non-vacuity control); + csv scoping vs PI_SUBAGENT_CHILD_AGENT → absent.
- *  - AC-A3: parent (no child env) prompt hash identical pre/post change
- *    (pre-change tree from PI_MEMPALACE_PRE_CHANGE_DIR worktree).
+ *  - AC-A3: parent (no child env) prompt hash identical pre/post change.
+ *    The pre-change tree is PI_MEMPALACE_PRE_CHANGE_DIR when set; otherwise
+ *    it is materialised with `git archive` from PI_MEMPALACE_PRE_CHANGE_REF
+ *    (default: the merge-base of HEAD with origin/main), so a branch must
+ *    not change the parent's system prompt.
  *  - AC-A6: fork-style children stable across curation-style spawns, plus
  *    the PI_SUBAGENT_CHILD upstream-contract pin against the installed
- *    pi-subagents package.
+ *    pi-subagents package (PI_SUBAGENTS_PKG_DIR, else the profile's and the
+ *    shared git install, else the npm install).
+ *
+ * The pi binary is PI_MEMPALACE_INT_PI_BIN when set, else the first `pi` on
+ * PATH outside any node_modules/.bin — npm and npx prepend the repo's own
+ * .bin, whose `pi` is the locked dev dependency, not the installed runtime.
+ * Every spawn drops the host's PI_* / JITI_* variables: a pi-subagents
+ * runner exports PI_PACKAGE_DIR (its own pi's package root) and JITI_ALIAS,
+ * and a different pi version reading another version's theme files crashes
+ * in initTheme before before_agent_start (W3.R4).
  *
  * Skips (with explicit reason) when prerequisites are absent so the repo
- * stays hermetic on machines without pi / pi-subagents / the pre-change
- * worktree. Print mode is used throughout: children reach wake-up exactly
+ * stays hermetic on machines without pi / pi-subagents / git. Print mode is
+ * used throughout: children reach wake-up exactly
  * through the before_agent_start self-heal (PRD §7.3), which the gate must
  * close; the session_start body surface is unit-pinned in child-gate.test.ts.
  */
 
 import { spawn, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,11 +51,22 @@ import assert from "node:assert/strict";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // This file lives at <repo>/tests/ — ONE level up is the repo root.
 const REPO_ROOT = join(__dirname, "..");
-const PRE_CHANGE_DIR =
-	process.env.PI_MEMPALACE_PRE_CHANGE_DIR ?? "/tmp/pi-mempalace-pre-change";
-const PI_SUBAGENTS_PKG =
-	process.env.PI_SUBAGENTS_PKG_DIR ??
-	join(process.env.HOME ?? "", ".pi", "agent", "npm", "node_modules", "pi-subagents");
+const PRE_CHANGE_DIR_ENV = process.env.PI_MEMPALACE_PRE_CHANGE_DIR;
+
+/** First existing pi-subagents package dir: the env override (only it when
+ *  set), else the profile git install, the shared git install, then npm. */
+function resolveSubagentsPkg(): string {
+	if (process.env.PI_SUBAGENTS_PKG_DIR) return process.env.PI_SUBAGENTS_PKG_DIR;
+	const home = homedir();
+	const gitRel = join("git", "github.com", "nicobailon", "pi-subagents");
+	const candidates = [
+		...(process.env.PI_CODING_AGENT_DIR ? [join(process.env.PI_CODING_AGENT_DIR, gitRel)] : []),
+		join(home, ".pi", "agent", gitRel),
+		join(home, ".pi", "agent", "npm", "node_modules", "pi-subagents"),
+	];
+	return candidates.find((c) => existsSync(c)) ?? candidates[candidates.length - 1];
+}
+const PI_SUBAGENTS_PKG = resolveSubagentsPkg();
 
 /** Scratch base — must be /tmp, NOT os.tmpdir(): on macOS that is
  *  /var/folders/…, which the pi project sandbox does not allow-write, and
@@ -51,21 +74,18 @@ const PI_SUBAGENTS_PKG =
  *  rehearsal with a /tmp scratch worked end-to-end. */
 const TMP_BASE = process.env.PI_MEMPALACE_INT_TMP ?? "/tmp";
 
-/** Scrubbed then re-set per spawn: gate vars (the runner itself may run
- *  inside a pi subagent child and leak them) plus mempalace/session vars
- *  that would route the spawn's CLI subprocess at the runner's REAL palace
- *  (MEMPALACE_PALACE_PATH / MEMPALACE_BACKEND) or couple it to the parent
- *  session machinery. Every spawn starts clean from this list. */
+/** Scrubbed then re-set per spawn: every PI_* and JITI_* variable (the
+ *  runner's gate vars, since it may itself run inside a pi subagent child;
+ *  its session coupling; and a runner's PI_PACKAGE_DIR / JITI_ALIAS, W3.R4),
+ *  plus mempalace vars that would route the spawn's CLI subprocess at the
+ *  runner's REAL palace (MEMPALACE_PALACE_PATH / MEMPALACE_BACKEND) and
+ *  pi-subagents' MCP_DIRECT_TOOLS. Every spawn starts clean. */
 const SCRUB_ENV_KEYS = [
-	"PI_SUBAGENT_CHILD",
-	"PI_SUBAGENT_CHILD_AGENT",
-	"PI_MEMPALACE_CHILD_WAKEUP",
-	"PI_MEMPALACE_CHILD_WAKEUP_AGENTS",
 	"MEMPALACE_PALACE_PATH",
 	"MEMPALACE_BACKEND",
-	"PI_SUBAGENT_PARENT_SESSION",
-	"PI_INTERCOM_SESSION_ID",
+	"MCP_DIRECT_TOOLS",
 ] as const;
+const SCRUB_ENV_PREFIXES = ["PI_", "JITI_"] as const;
 
 interface ProbeLine {
 	ts: string;
@@ -130,27 +150,62 @@ function pathExists(p: string): boolean {
 	return existsSync(p);
 }
 
-/** Resolved synchronously at module load — the {skip} test option is
- *  evaluated at registration time, before any before() hook runs. */
-function resolvePiBinSync(): string | null {
+function isExecutable(p: string): boolean {
 	try {
-		execFileSync("which", ["pi"], { stdio: "ignore", timeout: 5000 });
-		return "pi";
+		accessSync(p, constants.X_OK);
+		return true;
 	} catch {
-		// fall through to the known install location
-	}
-	const fallback = join(homedir(), ".npm-global", "bin", "pi");
-	try {
-		accessSync(fallback, constants.X_OK);
-		return fallback;
-	} catch {
-		return null;
+		return false;
 	}
 }
 
+/** Resolved synchronously at module load, because the {skip} test option is
+ *  evaluated at registration time, before any before() hook runs. The
+ *  installed runtime, never a node_modules/.bin dev-dependency copy. */
+function resolvePiBinSync(): string | null {
+	const override = process.env.PI_MEMPALACE_INT_PI_BIN;
+	if (override) return isExecutable(override) ? override : null;
+	for (const dir of (process.env.PATH ?? "").split(":")) {
+		if (!dir || /[\\/]node_modules[\\/]\.bin[\\/]?$/.test(dir)) continue;
+		const candidate = join(dir, "pi");
+		if (isExecutable(candidate)) return candidate;
+	}
+	const fallback = join(homedir(), ".npm-global", "bin", "pi");
+	return isExecutable(fallback) ? fallback : null;
+}
+
 const piBin = resolvePiBinSync();
-const preAvailable = existsSync(PRE_CHANGE_DIR);
-const PI_SKIP = piBin === null ? "pi binary not found on PATH" : undefined;
+const PI_SKIP = piBin === null
+	? "pi binary not found on PATH outside node_modules/.bin (set PI_MEMPALACE_INT_PI_BIN)"
+	: undefined;
+
+/** Pre-change tree for AC-A3: the env dir, else `git archive` of the ref
+ *  extracted into `dest`. Returns the dir, or the skip reason. */
+function materialisePreChange(dest: string): { dir: string } | { skip: string } {
+	if (PRE_CHANGE_DIR_ENV) {
+		return existsSync(PRE_CHANGE_DIR_ENV)
+			? { dir: PRE_CHANGE_DIR_ENV }
+			: { skip: `pre-change dir not found at ${PRE_CHANGE_DIR_ENV} (PI_MEMPALACE_PRE_CHANGE_DIR)` };
+	}
+	const git = (...args: string[]) =>
+		execFileSync("git", ["-C", REPO_ROOT, ...args], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+	let ref = process.env.PI_MEMPALACE_PRE_CHANGE_REF ?? "";
+	try {
+		if (!ref) ref = git("merge-base", "HEAD", "origin/main");
+		const tar = `${dest}.tar`;
+		git("archive", "--format=tar", "-o", tar, ref);
+		execFileSync("mkdir", ["-p", dest]);
+		execFileSync("tar", ["-xf", tar, "-C", dest]);
+		return { dir: dest };
+	} catch {
+		return {
+			skip: `could not materialise the pre-change tree from ${ref || "merge-base HEAD origin/main"} (set PI_MEMPALACE_PRE_CHANGE_DIR or PI_MEMPALACE_PRE_CHANGE_REF)`,
+		};
+	}
+}
 
 /** Scratch agent dir: provider + session storage only. No extensions/
  *  manifest — extension loading happens via explicit --extension flags. */
@@ -170,6 +225,7 @@ let workDir = "";
 let palaceDir = "";
 let agentDir = "";
 let linkedPreNodeModules = "";
+let preChange: { dir: string } | { skip: string } = { skip: "pre-change tree not prepared (pi binary missing)" };
 
 async function runOnce(args: string[], env: NodeJS.ProcessEnv): Promise<string> {
 	let stderr = "";
@@ -215,6 +271,9 @@ async function spawnPi(opts: {
 	await mkdir(probeDir, { recursive: true });
 
 	const env: NodeJS.ProcessEnv = { ...process.env };
+	for (const k of Object.keys(env)) {
+		if (SCRUB_ENV_PREFIXES.some((p) => k.startsWith(p))) delete env[k];
+	}
 	for (const k of SCRUB_ENV_KEYS) delete env[k];
 	delete env.PROMPT_PROBE_DIR;
 	Object.assign(env, {
@@ -289,10 +348,11 @@ before(async () => {
 
 	agentDir = await buildScratchAgent(join(runRoot, "scratch"));
 
-	if (preAvailable) {
-		// The worktree has no node_modules (gitignored); borrow the repo's —
-		// same commit, same deps.
-		const nm = join(PRE_CHANGE_DIR, "node_modules");
+	preChange = materialisePreChange(join(runRoot, "pre-change"));
+	if ("dir" in preChange) {
+		// The tree has no node_modules (gitignored); borrow the repo's: the
+		// parent prompt depends on the extension source, not on dev deps.
+		const nm = join(preChange.dir, "node_modules");
 		if (!pathExists(nm)) {
 			await symlink(join(REPO_ROOT, "node_modules"), nm, "dir");
 			linkedPreNodeModules = nm;
@@ -374,11 +434,15 @@ describe("AC-A4 escape hatch", () => {
 describe("AC-A3 parent invariance: prompt hash unchanged pre/post change", () => {
 	it("parent spawn hashes identically against the pre-change worktree", {
 		timeout: 180_000,
-		skip: PI_SKIP ?? (preAvailable ? undefined : `pre-change worktree not found at ${PRE_CHANGE_DIR} (set PI_MEMPALACE_PRE_CHANGE_DIR)`),
-	}, async () => {
+		skip: PI_SKIP,
+	}, async (t) => {
+		if ("skip" in preChange) {
+			t.skip(preChange.skip);
+			return;
+		}
 		const task = "parent invariance task: compare my system prompt hash";
 		const post = (await spawnPi({ task, extRoot: REPO_ROOT, label: "parent-post" }))[0];
-		const pre = (await spawnPi({ task, extRoot: PRE_CHANGE_DIR, label: "parent-pre" }))[0];
+		const pre = (await spawnPi({ task, extRoot: preChange.dir, label: "parent-pre" }))[0];
 
 		assert.equal(post.mempalaceMarker, true, "post-change parent keeps the wake-up block");
 		assert.equal(pre.mempalaceMarker, true, "pre-change parent keeps the wake-up block");
@@ -404,23 +468,26 @@ describe("AC-A6 fork-child stability + upstream contract pin", () => {
 			t.skip(`pi-subagents package not found at ${pkgDir} (set PI_SUBAGENTS_PKG_DIR)`);
 			return;
 		}
-		const argsFile = join(pkgDir, "src", "runs", "shared", "pi-args.ts");
-		let src: string;
-		try {
-			src = readFileSync(argsFile, "utf8");
-		} catch {
-			t.skip(`pi-args.ts not found at ${argsFile} — package layout changed, update the pin`);
+		// Search the whole source tree, not one file: upstream moved the
+		// constant (pi-args.ts → child-runtime-config.ts) and the assignment
+		// (into the child-hosting runner) without changing the contract.
+		const srcDir = join(pkgDir, "src");
+		const sources = existsSync(srcDir)
+			? (readdirSync(srcDir, { recursive: true }) as string[])
+				.filter((f) => f.endsWith(".ts") && !/(^|[\\/])(test|tests|__tests__)[\\/]|\.test\.ts$/.test(f))
+				.map((f) => readFileSync(join(srcDir, f), "utf8"))
+			: [];
+		if (sources.length === 0) {
+			t.skip(`no TypeScript sources under ${srcDir} \u2014 package layout changed, update the pin`);
 			return;
 		}
-		assert.match(
-			src,
-			/SUBAGENT_CHILD_ENV\s*=\s*"PI_SUBAGENT_CHILD"/,
-			"PI_SUBAGENT_CHILD env-var name contract (pi-subagents pi-args.ts)",
+		assert.ok(
+			sources.some((s) => /SUBAGENT_CHILD_ENV\s*=\s*["']PI_SUBAGENT_CHILD["']/.test(s)),
+			"PI_SUBAGENT_CHILD env-var name contract (pi-subagents SUBAGENT_CHILD_ENV)",
 		);
-		assert.match(
-			src,
-			/env\[SUBAGENT_CHILD_ENV\]\s*=\s*"1"/,
-			'PI_SUBAGENT_CHILD set-to-"1" assignment contract (pi-subagents pi-args.ts) — gate silently stops working upstream otherwise',
+		assert.ok(
+			sources.some((s) => /env\[SUBAGENT_CHILD_ENV\]\s*=\s*["']1["']/.test(s)),
+			'PI_SUBAGENT_CHILD set-to-"1" assignment contract (pi-subagents) \u2014 the gate silently stops working upstream otherwise',
 		);
 	});
 });

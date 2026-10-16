@@ -152,6 +152,9 @@ export function registerMempalaceEvents(
 	// (R8), which then counts once, as usual.
 	const sendHandoffNudge = (): void => {
 		if (!state.agentRunActive) state.nudgeRunPending = true;
+		// A handoff nudge is a diary nudge: the activity count starts over
+		// (D18, amended).
+		state.toolCallsSinceDiary = 0;
 		// D21: while a curation checkpoint is still queued, the run this nudge
 		// joins will drain it — point at the checkpoint instead of contradicting
 		// it with "Start no new work". Same customType as the standard text.
@@ -440,9 +443,15 @@ export function registerMempalaceEvents(
 	});
 
 	// ── tool_execution_start — "already diarised" mark + activity count (D18) ──
+	// The count accumulates across runs until a diary write or a diary nudge
+	// (D18, amended): a diary-tool call is the write, so it zeroes the count.
 	pi.on("tool_execution_start", (event) => {
-		state.toolCallsThisRun++;
-		if (isDiaryToolName(event.toolName)) state.diaryWrittenThisRun = true;
+		if (isDiaryToolName(event.toolName)) {
+			state.diaryWrittenThisRun = true;
+			state.toolCallsSinceDiary = 0;
+			return;
+		}
+		state.toolCallsSinceDiary++;
 	});
 
 	// ── handoff bus — the "handoff in progress" window + the H2 nudge (D8/D9/D13–D16) ──
@@ -565,16 +574,19 @@ export function registerMempalaceEvents(
 			const aborted = (event as { aborted?: unknown }).aborted === true;
 			// Snapshot then clear BEFORE any gate (D11/D18): the nudge run's
 			// agent_end fires before its settle, so the pending flag must
-			// survive until here — and must not leak into the next run. The
-			// tool-call count is per run for the same reason (D18).
+			// survive until here — and must not leak into the next run.
 			const nudgeRun = state.nudgeRunPending;
 			const diaryWrittenThisRun = state.diaryWrittenThisRun;
 			const checkpointQueued = state.checkpointQueuedThisRun;
-			const toolCallsThisRun = state.toolCallsThisRun;
+			const toolCallsSinceDiary = state.toolCallsSinceDiary;
 			state.nudgeRunPending = false;
 			state.diaryWrittenThisRun = false;
 			state.checkpointQueuedThisRun = false;
-			state.toolCallsThisRun = 0;
+			// The activity count is NOT per run (D18, amended): it carries
+			// across settles the gate skips, so short runs add up. A nudge run
+			// is the diary turn and a queued checkpoint asks for the diary write,
+			// so both start the count over; the nudge send below does too.
+			if (nudgeRun || checkpointQueued) state.toolCallsSinceDiary = 0;
 			if (
 				!shouldNudgeOnSettle({
 					aborted,
@@ -587,7 +599,7 @@ export function registerMempalaceEvents(
 					nudgeRun,
 					diaryWrittenThisRun,
 					checkpointQueued,
-					toolCallsThisRun,
+					toolCallsSinceDiary,
 					minToolCalls:
 						state.settings?.diarySettleMinToolCalls ??
 						DEFAULT_MEMPALACE_SETTINGS.diarySettleMinToolCalls,
@@ -598,6 +610,7 @@ export function registerMempalaceEvents(
 			// Set before the send: the run the nudge may start must count as a
 			// nudge run from its first agent_end (D11).
 			state.nudgeRunPending = true;
+			state.toolCallsSinceDiary = 0;
 			// Fire-and-forget by contract — pi owns the promise (E16).
 			pi.sendMessage(
 				{

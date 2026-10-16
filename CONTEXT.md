@@ -53,7 +53,7 @@ The pi-handoff event shapes pi-mempalace mirrors in `domain/handoff-contract.ts`
 _Avoid_: event schema, sibling API, D6 shapes (the decision, not the thing)
 
 **activity threshold**:
-The minimum number of tool calls a run must make before its settle may nudge — `mempalace.diary_settle_min_tool_calls`, default 3, 0 = every settle. Counted per run from `tool_execution_start`, reset at `agent_settled`.
+The minimum number of tool calls that must accumulate since the last diary write or diary nudge before a settle may nudge — `mempalace.diary_settle_min_tool_calls`, default 3, 0 = every settle. Counted from `tool_execution_start` across runs, so short runs add up; reset by a diary-tool call, a sent settle or handoff nudge, a nudge run's settle, and a settle that queued the curation checkpoint.
 _Avoid_: tool budget, cooldown
 
 **wait self-bound**:

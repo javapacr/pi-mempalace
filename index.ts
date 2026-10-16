@@ -28,9 +28,10 @@
  *                          children.curation is set (default off);
  *                          runs started by the settle nudge never
  *                          advance the exchange counter
- * - agent_settled        — after every settled TUI run that made at
- *                          least diary_settle_min_tool_calls (default 3)
- *                          tool calls, send one hidden
+ * - agent_settled        — after every settled TUI run once at least
+ *                          diary_settle_min_tool_calls (default 3) tool
+ *                          calls accumulated since the last diary write
+ *                          or nudge, send one hidden
  *                          diary nudge (write one MemPalace diary entry
  *                          if anything durable happened, else reply one
  *                          short line and stop); gated by

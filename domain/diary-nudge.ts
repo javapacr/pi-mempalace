@@ -57,8 +57,9 @@ export interface SettleNudgeInput {
 	readonly nudgeRun: boolean;
 	/** The run already wrote a diary entry. */
 	readonly diaryWrittenThisRun: boolean;
-	/** Tool calls counted in the settling run (D18). */
-	readonly toolCallsThisRun: number;
+	/** Tool calls accumulated since the last diary write or diary nudge,
+	 * across settles the gate skipped (D18, amended). */
+	readonly toolCallsSinceDiary: number;
 	/** `mempalace.diary_settle_min_tool_calls` (default 3; 0 = every settle). */
 	readonly minToolCalls: number;
 	/** agent_end queued the curation checkpoint this run (D17). The checkpoint
@@ -75,7 +76,8 @@ export interface SettleNudgeInput {
  * The settle gate: nudge only a real, primary, enabled TUI run with a diary
  * tool available, that has not already diarised, is not the nudge's own run,
  * is not inside a handoff, did not just queue the curation checkpoint, and
- * made at least the activity threshold of tool calls (I1 gate list, D18).
+ * has accumulated at least the activity threshold of tool calls since the
+ * last diary write or nudge (I1 gate list, D18).
  */
 export function shouldNudgeOnSettle(input: SettleNudgeInput): boolean {
 	return (
@@ -88,7 +90,7 @@ export function shouldNudgeOnSettle(input: SettleNudgeInput): boolean {
 		!input.nudgeRun &&
 		!input.diaryWrittenThisRun &&
 		!input.checkpointQueued &&
-		input.toolCallsThisRun >= input.minToolCalls
+		input.toolCallsSinceDiary >= input.minToolCalls
 	);
 }
 

@@ -130,10 +130,14 @@ export class SessionState {
 	 * prompt already asks for a diary write, so the settle yields the nudge to
 	 * it. Set on the checkpoint path, read-and-cleared at agent_settled. */
 	checkpointQueuedThisRun = false;
-	/** Tool calls counted in the current run (D18): incremented by
-	 * tool_execution_start, snapshotted and cleared at agent_settled, where
-	 * the settle gate compares it against diarySettleMinToolCalls. */
-	toolCallsThisRun = 0;
+	/** Tool calls accumulated since the last diary write or diary nudge (D18,
+	 * amended): incremented by tool_execution_start and compared against
+	 * diarySettleMinToolCalls at agent_settled. Survives a settle the gate
+	 * skips for any other reason (below threshold, aborted, handoff window),
+	 * so short runs add up. Reset to 0 by a diary-tool call, by the settle
+	 * that sends the settle nudge, by the settle of a nudge run or of a run
+	 * that queued the curation checkpoint, and by a handoff nudge. */
+	toolCallsSinceDiary = 0;
 	/** A curation checkpoint is queued and no run has started since (D21):
 	 * set by the agent_end that queues it, cleared at the next agent_start
 	 * (any run start drains the pending nextTurn message). Chooses the
@@ -177,7 +181,7 @@ export class SessionState {
 		this.settings = null;
 		this.nudgeRunPending = false;
 		this.diaryWrittenThisRun = false;
-		this.toolCallsThisRun = 0;
+		this.toolCallsSinceDiary = 0;
 		this.checkpointQueuedThisRun = false;
 		this.checkpointPending = false;
 		this.handoffDriftWarned = false;

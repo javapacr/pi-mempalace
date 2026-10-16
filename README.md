@@ -48,8 +48,8 @@ index.ts                          # Entry — wires up use cases + event registr
 | `session_start`               | Load wake-up context (L0+L1 ~940 tokens); reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies                                         |
 | `before_agent_start`          | Set the wake-up context as the `mempalace` system-prompt section (`systemPromptOptions.sections.mempalace`, rendered `<mempalace>…</mempalace>`) on **every** turn, short prompts included — never a forced `systemPrompt`, so pi keeps transcript deltas. Needs pi ≥ 0.86; older hosts skip wake-up injection with a one-time stderr log. Then recall per-prompt memories (prompts ≥ 10 chars) as a custom message; gated by settings (`recall_on_prompt` master switch; subagent children also need `children.recall`, default off) — the wake-up self-heal retry stays child-gated by the env hatch |
 | `agent_end`                   | Every `save_interval` exchanges (default 15), inject an in-session curation checkpoint that files key items via the MemPalace MCP tools; runs triggered by the diary nudge are excluded from the count and skip the checkpoint; subagent children skip it unless `children.curation` is set (default off)                          |
-| `agent_settled`               | After every settled run in interactive TUI mode that made at least `mempalace.diary_settle_min_tool_calls` tool calls (the activity threshold, default 3; 0 = every settle), send one hidden diary nudge (`display:false`, `triggerTurn:true`, followUp): write one MemPalace diary entry if anything durable happened, else reply one short line and start no new work. Skips: the nudge's own run, aborted settles, subagent children, non-TUI modes (print/json/rpc), a handoff in progress, runs that already called the diary tool, runs whose `agent_end` just queued the curation checkpoint (its prompt already asks for a diary write, and on pi ≥ 1.2 a nudge run would carry that pending checkpoint into itself), and sessions with no tool ending in `mempalace_diary_write` registered — the diary-write tool must be registered directly (not reachable only through an MCP gateway). Known limitation: a diary write routed through the `mcp` gateway tool is not detected, so that run still gets a redundant nudge ([backlog 007](docs/backlog/007-mcp-gateway-diary-detection.md)). Off switch: `mempalace.diary_on_settle` |
-| `tool_execution_start` / `input` | Count the run's tool calls toward the activity threshold, and mark the run as already-diarised when a tool name ends in `mempalace_diary_write`; the user's next interactive `input` closes the handoff-in-progress window below (nudge runs never fire `input`) |
+| `agent_settled`               | After every settled run in interactive TUI mode once at least `mempalace.diary_settle_min_tool_calls` tool calls have accumulated since the last diary write or diary nudge (the activity threshold, default 3; 0 = every settle — short runs add up across settles that did not nudge), send one hidden diary nudge (`display:false`, `triggerTurn:true`, followUp): write one MemPalace diary entry if anything durable happened, else reply one short line and start no new work. Skips: the nudge's own run, aborted settles, subagent children, non-TUI modes (print/json/rpc), a handoff in progress, runs that already called the diary tool, runs whose `agent_end` just queued the curation checkpoint (its prompt already asks for a diary write, and on pi ≥ 1.2 a nudge run would carry that pending checkpoint into itself), and sessions with no tool ending in `mempalace_diary_write` registered — the diary-write tool must be registered directly (not reachable only through an MCP gateway). Known limitation: a diary write routed through the `mcp` gateway tool is not detected, so that run still gets a redundant nudge ([backlog 007](docs/backlog/007-mcp-gateway-diary-detection.md)). Off switch: `mempalace.diary_on_settle` |
+| `tool_execution_start` / `input` | Count tool calls toward the activity threshold, and mark the run as already-diarised when a tool name ends in `mempalace_diary_write` (that call also starts the count over, as do a sent settle or handoff nudge, a nudge run's settle and a settle that queued the curation checkpoint); the user's next interactive `input` closes the handoff-in-progress window below (nudge runs never fire `input`) |
 | pi.events `handoff_command_start` | pi-handoff's `/handoff`, after its has-conversation gate: raise the handoff-in-progress window and send one hidden handoff nudge — only for `trigger:"handoff"` with a function `waitUntil`, which receives a promise resolving on the next `agent_settled` (aborted or not), registered synchronously before the listener returns and released after 125s at the latest (the wait self-bound). When a curation checkpoint is still queued, the nudge uses a checkpoint-variant text: finish the checkpoint concisely (it includes the diary write), then stop. An unrecognised payload (missing/unknown trigger, or `trigger:"handoff"` without `waitUntil`) shows one drift warning per session. A bare `/continue` (`trigger:"continue"`), a missing/unknown trigger, or a missing `waitUntil` sends nothing (a missing `waitUntil` still raises the window). Same gates as the tool path below. Off switch: `mempalace.diary_on_handoff` |
 | pi.events `handoff_tool_start` / `tui_filled_handoff` / `handoff_command_complete` | pi-handoff's continue path: `handoff_tool_start` opens the handoff-in-progress window (which keeps the settle nudge quiet until the handoff resolves) and sends one hidden handoff nudge, deduped per session; `tui_filled_handoff` (the installed continue tool's legacy signal) only opens the window; `handoff_command_complete` closes it |
 | `session_before_compact`      | Mine the session transcript before summarisation                                                                                                                                                                                            |
@@ -88,10 +88,14 @@ it first.
 registered, and not a subagent child).
 `tests/handoff-contract-drift.test.ts` reads pi-handoff's
 `infrastructure/event-channels.ts`, `domain/types.ts` and
-`application/handoff-executor.ts` (from `PI_HANDOFF_DIR`, else the
-`pi-handoff` sibling of the main checkout; skipped when neither exists) and
-fails when a channel name, trigger value, payload field or the 120s cap
-drifts.
+`application/handoff-executor.ts` at a committed ref (`git show`
+`PI_HANDOFF_REF`, default `HEAD`; never the working tree) from the repo at
+`PI_HANDOFF_DIR`, else the `pi-handoff` sibling of the main checkout
+(skipped when neither has the files), and fails when a channel name, trigger
+value, payload field or the 120s cap drifts. Both sides go through the same
+formatting-tolerant reader (`tests/helpers/ts-contract.ts`): comments,
+whitespace, quote style, member order and `readonly` do not matter, and
+unions compare as sets.
 
 ## Dormant Maintenance Tools
 
@@ -215,7 +219,7 @@ print one-shots included); changes apply to the next session.
 | `mempalace.recall_on_prompt`     | boolean      | `true`  | Master switch for `before_agent_start` recall — `false` disables recall everywhere                 |
 | `mempalace.diary_on_settle`      | boolean      | `true`  | Settle diary nudge — `false` stops the hidden after-run diary prompt                               |
 | `mempalace.diary_on_handoff`     | boolean      | `true`  | Handoff diary nudge — `false` stops the hidden before-snapshot diary prompt on both pi-handoff paths |
-| `mempalace.diary_settle_min_tool_calls` | non-negative int | `3` | Activity threshold for the settle nudge — runs with fewer tool calls get no nudge; `0` nudges every qualifying settle |
+| `mempalace.diary_settle_min_tool_calls` | non-negative int | `3` | Activity threshold for the settle nudge — counted since the last diary write or diary nudge, across runs; below it a settle gets no nudge; `0` nudges every qualifying settle |
 | `mempalace.children.recall`      | boolean      | `false` | Subagent children run the per-prompt recall                                                        |
 | `mempalace.children.curation`    | boolean      | `false` | Subagent children run the `agent_end` curation checkpoint                                          |
 
@@ -242,6 +246,19 @@ print one-shots included); changes apply to the next session.
 With an older pi-handoff, the `/handoff` diary turn is inert and the drift
 warning says so once per session; the settle nudge and the `tui_filled_handoff`
 quiet window keep working.
+
+## Testing
+
+`npm run typecheck` and `npm test`. `tests/child-sibling-cache.int.test.ts`
+spawns the installed `pi` (the first on `PATH` outside any
+`node_modules/.bin`, or `PI_MEMPALACE_INT_PI_BIN`) with every host `PI_*` and
+`JITI_*` variable dropped. Its parent-invariance check compares against a
+pre-change tree: `PI_MEMPALACE_PRE_CHANGE_DIR`, else a `git archive` of
+`PI_MEMPALACE_PRE_CHANGE_REF` (default: the merge-base of `HEAD` with
+`origin/main`). Its pi-subagents pin reads `PI_SUBAGENTS_PKG_DIR`, else the
+profile's and the shared git install, else the npm install. The contract
+drift test takes `PI_HANDOFF_DIR` and `PI_HANDOFF_REF` (see the pi-handoff
+contract above).
 
 ## Known Issues
 
