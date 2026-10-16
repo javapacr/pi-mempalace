@@ -202,7 +202,7 @@ export function buildDiaryHarness(
 		},
 	) as never;
 
-registerMempalaceEvents(
+	registerMempalaceEvents(
 		pi,
 		state,
 		wakeUp,
@@ -210,29 +210,29 @@ registerMempalaceEvents(
 		curation,
 		mining,
 		skillInstaller,
-);
+	);
 
-const notify = opts.notify ?? (() => {});
+	const notify = opts.notify ?? (() => {});
 
-// Keep the forced threshold in place across the whole harness life: applied
-// now (tests that never sessionStart) and re-applied after every
-// sessionStart (session_start replaces state.settings from the files).
-const forcedThreshold = opts.settleMinToolCalls ?? 0;
-const forceSettleThreshold = (): void => {
-	if (forcedThreshold === "default") return;
-	state.settings = {
-		...(state.settings ?? DEFAULT_MEMPALACE_SETTINGS),
-		diarySettleMinToolCalls: forcedThreshold,
+	// Keep the forced threshold in place across the whole harness life: applied
+	// now (tests that never sessionStart) and re-applied after every
+	// sessionStart (session_start replaces state.settings from the files).
+	const forcedThreshold = opts.settleMinToolCalls ?? 0;
+	const forceSettleThreshold = (): void => {
+		if (forcedThreshold === "default") return;
+		state.settings = {
+			...(state.settings ?? DEFAULT_MEMPALACE_SETTINGS),
+			diarySettleMinToolCalls: forcedThreshold,
+		};
 	};
-};
-forceSettleThreshold();
+	forceSettleThreshold();
 
-const ctxFor = (mode?: string, sessionFile: string | null = null) => ({
-	mode: mode ?? defaultMode,
-	cwd: scratchDir,
-	sessionManager: { getSessionFile: () => sessionFile },
-	ui: { notify },
-});
+	const ctxFor = (mode?: string, sessionFile: string | null = null) => ({
+		mode: mode ?? defaultMode,
+		cwd: scratchDir,
+		sessionManager: { getSessionFile: () => sessionFile },
+		ui: { notify },
+	});
 
 	async function drive(name: string, event: unknown, ctx: unknown) {
 		const fns = handlers.get(name) ?? [];

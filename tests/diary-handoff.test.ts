@@ -564,6 +564,22 @@ describe("handoff nudge (W2)", () => {
 	});
 
 	it("H2 self-bound: a wait resolves after 125s when no settle ever arrives", async (t) => {
+		// Real timer first: mocked timers report hasRef() === true even after
+		// unref(), so the unref requirement (a quitting pi must not wait out
+		// the bound) is only observable on a real Timeout. Cleared by a settle
+		// right away — no wall-clock wait.
+		const real = buildDiaryHarness();
+		await real.sessionStart();
+		real.emitBus(
+			HANDOFF_CHANNELS.commandStart,
+			commandStartPayload("handoff", waitCollector().waitUntil),
+		);
+		const armed = real.state.settleWaiterTimer as NodeJS.Timeout | null;
+		assert.ok(armed !== null, "the self-bound is armed on a real timer");
+		assert.equal(armed.hasRef(), false, "the self-bound timer is unref'd");
+		await real.settle();
+		assert.equal(real.state.settleWaiterTimer, null);
+
 		const h = buildDiaryHarness();
 		await h.sessionStart();
 		const timers = t.mock.timers;
@@ -583,7 +599,13 @@ describe("handoff nudge (W2)", () => {
 			);
 			assert.ok(h.state.settleWaiterTimer !== null, "the self-bound is armed");
 
-			timers.tick(HANDOFF_WAIT_SELF_BOUND_MS);
+			timers.tick(HANDOFF_WAIT_SELF_BOUND_MS - 1);
+			assert.equal(
+				await resolvedAfterFlush(collector.promises[0]),
+				false,
+				"still open 1ms before the bound",
+			);
+			timers.tick(1);
 
 			assert.ok(
 				await resolvedAfterFlush(collector.promises[0]),
@@ -613,6 +635,18 @@ describe("handoff nudge (W2)", () => {
 				HANDOFF_CHANNELS.commandStart,
 				commandStartPayload("handoff", first.waitUntil),
 			);
+			const batchTimer = h.state.settleWaiterTimer;
+			// A second registration in the same batch reuses the armed timer —
+			// an orphaned extra timer could later release a newer batch early.
+			h.emitBus(
+				HANDOFF_CHANNELS.commandStart,
+				commandStartPayload("handoff", waitCollector().waitUntil),
+			);
+			assert.equal(
+				h.state.settleWaiterTimer,
+				batchTimer,
+				"one self-bound timer per batch of waiters",
+			);
 			timers.tick(60_000);
 			await h.settle();
 			assert.ok(
@@ -628,7 +662,7 @@ describe("handoff nudge (W2)", () => {
 			// The next batch gets its own full bound: registered at t=60s, so
 			// it must survive past the FIRST timer's would-be deadline (t=125s)
 			// — proof the stale timer really was cleared — and release at its
-				// own t=185s.
+			// own t=185s.
 			const second = waitCollector();
 			h.emitBus(
 				HANDOFF_CHANNELS.commandStart,
@@ -652,6 +686,24 @@ describe("handoff nudge (W2)", () => {
 	});
 
 	it("H2 drift: unrecognised payloads warn once per session", async () => {
+		// Each drifted shape warns on its own in a fresh session (D20), so no
+		// shape rides on another's latch.
+		for (const trigger of [undefined, "deploy", "handoff"] as const) {
+			const alone: string[] = [];
+			const fresh = buildDiaryHarness({ notify: (msg) => alone.push(msg) });
+			await fresh.sessionStart();
+			fresh.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload(trigger));
+			assert.deepEqual(
+				alone,
+				[HANDOFF_DRIFT_WARNING],
+				`trigger ${String(trigger)} without waitUntil warns`,
+			);
+			// A new session re-arms the warning (reset() clears the latch).
+			await fresh.sessionStart();
+			fresh.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload(trigger));
+			assert.equal(alone.length, 2, "the latch is per session");
+		}
+
 		const seen: Array<{ msg: string; level: string | undefined }> = [];
 		const h = buildDiaryHarness({
 			notify: (msg, level) => seen.push({ msg, level }),
@@ -723,6 +775,11 @@ describe("handoff nudge (W2)", () => {
 			),
 			"the checkpoint is queued",
 		);
+		// The idle /handoff of backlog 010: the run settled (D17 yields the
+		// settle nudge and clears checkpointQueuedThisRun), yet the checkpoint
+		// stays pending until the next agent_start.
+		await h.settle();
+		assert.ok(h.state.checkpointPending, "pending survives the settle");
 
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -764,5 +821,11 @@ describe("handoff nudge (W2)", () => {
 		);
 		assert.equal(nudges.length, 1);
 		assert.equal(nudges[0].message.content, HANDOFF_NUDGE_TEXT);
+
+		// A new session starts with nothing pending (reset() clears it).
+		for (let i = 0; i < 15; i++) await h.agentEnd(SESSION_FILE);
+		assert.ok(h.state.checkpointPending);
+		await h.sessionStart();
+		assert.equal(h.state.checkpointPending, false, "reset() clears it");
 	});
 });
