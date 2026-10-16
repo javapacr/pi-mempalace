@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { HANDOFF_WAIT_SELF_BOUND_MS } from "../domain/handoff-contract";
 import {
+	interfaceExtends,
 	interfaceMembers,
 	numericConst,
 	readCommitted,
@@ -108,6 +109,18 @@ describe("pi-handoff contract (drift test)", () => {
 			members(ours, "HandoffCommandStartPayload", "pi-mempalace"),
 			members(src, "HandoffCommandStartPayload", "pi-handoff"),
 			"HandoffCommandStartPayload members (waitUntil)",
+		);
+		// Own members alone miss a re-parenting: the start payload must still
+		// inherit trigger & co. from the same base.
+		assert.deepEqual(
+			interfaceExtends(ours, "HandoffCommandStartPayload"),
+			interfaceExtends(src, "HandoffCommandStartPayload"),
+			"HandoffCommandStartPayload extends the same parents",
+		);
+		assert.deepEqual(
+			interfaceExtends(src, "HandoffCommandStartPayload"),
+			new Set(["HandoffCommandPayloadBase"]),
+			"pi-handoff's start payload extends HandoffCommandPayloadBase",
 		);
 	});
 

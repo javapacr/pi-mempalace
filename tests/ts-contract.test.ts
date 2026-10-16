@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+	interfaceExtends,
 	interfaceMembers,
 	numericConst,
 	readCommitted,
@@ -26,6 +27,8 @@ export interface HandoffCommandPayloadBase {
 	quickMode: boolean;
 	trigger: HandoffTrigger;
 	timestamp: number;
+	meta: Map<string, number>;
+	mode: "a" | "b";
 }
 export interface HandoffCommandStartPayload extends HandoffCommandPayloadBase {
 	waitUntil?: (promise: Promise<unknown>) => void;
@@ -49,7 +52,9 @@ export interface HandoffCommandPayloadBase
 {
 	readonly timestamp: number,
 	/* trigger; see { docs } */ readonly trigger : HandoffTrigger,
-	readonly quickMode: boolean,
+	readonly quickMode: boolean, // legacy; mirrors trigger
+	readonly mode: 'b' | 'a',
+	readonly meta: Map< string , number >,
 	readonly goal: null|string,
 }
 export interface HandoffCommandStartPayload
@@ -58,7 +63,7 @@ export interface HandoffCommandStartPayload
 }
 export const HANDOFF_CHANNELS = {
 	'commandStart': 'handoff_command_start',
-	toolStart: \`handoff_tool_start\`,
+	toolStart: \`handoff_tool_start\`, // legacy: { tool, ; }
 } as const
 const HOOK_WAIT_CAP_MS: number = 120000;
 `;
@@ -75,6 +80,7 @@ function shape(src: string) {
 		start: obj("HandoffCommandStartPayload"),
 		channels: channels ? Object.fromEntries(channels) : null,
 		cap: numericConst(src, "HOOK_WAIT_CAP_MS"),
+		extends: interfaceExtends(src, "HandoffCommandStartPayload"),
 	};
 }
 
@@ -89,6 +95,14 @@ describe("contract reader (W3.R2)", () => {
 			optional: true,
 			type: "(promise:Promise<unknown>)=>void",
 		});
+		// Explicit types: deepEqual alone would pass if both sides mis-parsed
+		// nested separators or literal quotes the same way.
+		assert.deepEqual(a.base?.meta, { optional: false, type: "Map<string,number>" });
+		assert.deepEqual(a.base?.mode, { optional: false, type: '"a"|"b"' });
+		assert.deepEqual(a.base?.quickMode, { optional: false, type: "boolean" });
+		assert.deepEqual(a.extends, new Set(["HandoffCommandPayloadBase"]));
+		assert.equal(Object.keys(a.base ?? {}).length, 6, "six base members, no comment debris");
+		assert.deepEqual(Object.keys(a.channels ?? {}).sort(), ["commandStart", "toolStart"]);
 	});
 
 	it("contract reader: real contract changes still read differently", () => {
@@ -102,6 +116,10 @@ describe("contract reader (W3.R2)", () => {
 			["waitUntil shape", CANONICAL.replace("=> void", "=> Promise<void>")],
 			["channel renamed", CANONICAL.replace('"handoff_tool_start"', '"handoff_tool_begin"')],
 			["cap changed", CANONICAL.replace("120_000", "180_000")],
+			["re-parented", CANONICAL.replace(
+				"HandoffCommandStartPayload extends HandoffCommandPayloadBase",
+				"HandoffCommandStartPayload extends OtherBase",
+			)],
 		];
 		for (const [label, src] of drifts) {
 			assert.notDeepEqual(shape(src), base, `${label} is detected`);
@@ -122,6 +140,13 @@ describe("contract reader (W3.R2)", () => {
 				"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
 				"commit", "-q", "-m", "c",
 			);
+			// A second commit with a drift, so HEAD~1 and HEAD differ.
+			await writeFile(join(repo, "domain", "types.ts"), CANONICAL.replace('"continue"', '"fork"'));
+			git("add", ".");
+			git(
+				"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+				"commit", "-q", "-m", "drift",
+			);
 			// An uncommitted drift in the working tree.
 			await writeFile(
 				join(repo, "domain", "types.ts"),
@@ -133,9 +158,13 @@ describe("contract reader (W3.R2)", () => {
 		});
 
 		it("contract reader: git show reads the commit, not the dirty working tree", () => {
-			const src = readCommitted(repo, "HEAD", "domain/types.ts");
-			assert.ok(src !== null);
-			assert.deepEqual(unionMembers(src, "HandoffTrigger"), new Set(["handoff", "continue"]));
+			const head = readCommitted(repo, "HEAD", "domain/types.ts");
+			assert.ok(head !== null);
+			assert.deepEqual(unionMembers(head, "HandoffTrigger"), new Set(["handoff", "fork"]), "HEAD, not the dirty tree");
+			const prev = readCommitted(repo, "HEAD~1", "domain/types.ts");
+			assert.ok(prev !== null);
+			assert.deepEqual(unionMembers(prev, "HandoffTrigger"), new Set(["handoff", "continue"]), "the ref is honoured");
+			assert.equal(readCommitted(repo, "no-such-ref", "domain/types.ts"), null, "missing ref → null");
 			assert.equal(readCommitted(repo, "HEAD", "missing.ts"), null, "missing path → null");
 			assert.equal(readCommitted("/nonexistent", "HEAD", "domain/types.ts"), null, "missing repo → null");
 		});

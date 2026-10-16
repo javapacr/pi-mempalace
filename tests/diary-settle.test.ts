@@ -572,6 +572,23 @@ describe("settle nudge (W1)", () => {
 		await h.settle();
 		assert.equal(h.sentMessages.length, 1);
 		assert.equal(h.sentMessages[0].message.customType, SETTLE_NUDGE_CUSTOM_TYPE);
+
+		// Handoff window: the tui_filled_handoff leg raises it WITHOUT a nudge,
+		// so nothing zeroes the count there; the windowed settle must keep it.
+		const w = buildDiaryHarness({ settleMinToolCalls: "default" });
+		await w.sessionStart();
+		await w.toolStart("read");
+		await w.toolStart("bash");
+		await w.toolStart("edit");
+		await w.agentEnd(SESSION_FILE);
+		w.emitBus(HANDOFF_CHANNELS.tuiFilledHandoff, {});
+		await w.settle();
+		assert.equal(w.sentMessages.length, 0, "handoff-window settles never nudge");
+		assert.equal(w.state.toolCallsSinceDiary, 3, "the handoff-window settle kept the count");
+		w.emitBus(HANDOFF_CHANNELS.commandComplete, { trigger: "continue" });
+		await w.agentEnd(SESSION_FILE);
+		await w.settle();
+		assert.equal(w.sentMessages.length, 1, "the carried count nudges once the window closes");
 	});
 
 	it("H1 threshold: the settle nudge starts the count over", async () => {

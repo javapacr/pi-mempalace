@@ -250,9 +250,9 @@ quiet window keep working.
 ## Testing
 
 `npm run typecheck` and `npm test`. `tests/child-sibling-cache.int.test.ts`
-spawns the installed `pi` (the first on `PATH` outside any
-`node_modules/.bin`, or `PI_MEMPALACE_INT_PI_BIN`) with every host `PI_*` and
-`JITI_*` variable dropped. Its parent-invariance check compares against a
+spawns the installed `pi` (`PI_MEMPALACE_INT_PI_BIN`, else the first on
+`PATH` outside any `node_modules/.bin`, else `~/.npm-global/bin/pi`) with every
+host `PI_*`, `JITI_*` and `MEMPALACE_*` variable dropped. Its parent-invariance check compares against a
 pre-change tree: `PI_MEMPALACE_PRE_CHANGE_DIR`, else a `git archive` of
 `PI_MEMPALACE_PRE_CHANGE_REF` (default: the merge-base of `HEAD` with
 `origin/main`). Its pi-subagents pin reads `PI_SUBAGENTS_PKG_DIR`, else the

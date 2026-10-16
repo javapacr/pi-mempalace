@@ -40,7 +40,7 @@
  */
 
 import { spawn, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, readdirSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -77,15 +77,12 @@ const TMP_BASE = process.env.PI_MEMPALACE_INT_TMP ?? "/tmp";
 /** Scrubbed then re-set per spawn: every PI_* and JITI_* variable (the
  *  runner's gate vars, since it may itself run inside a pi subagent child;
  *  its session coupling; and a runner's PI_PACKAGE_DIR / JITI_ALIAS, W3.R4),
- *  plus mempalace vars that would route the spawn's CLI subprocess at the
- *  runner's REAL palace (MEMPALACE_PALACE_PATH / MEMPALACE_BACKEND) and
- *  pi-subagents' MCP_DIRECT_TOOLS. Every spawn starts clean. */
-const SCRUB_ENV_KEYS = [
-	"MEMPALACE_PALACE_PATH",
-	"MEMPALACE_BACKEND",
-	"MCP_DIRECT_TOOLS",
-] as const;
-const SCRUB_ENV_PREFIXES = ["PI_", "JITI_"] as const;
+ *  every MEMPALACE_* variable (MEMPALACE_PALACE_PATH / MEMPALACE_BACKEND
+ *  would route the spawn's CLI subprocess at the runner's REAL palace;
+ *  MEMPALACE_PALACE is re-set to the scratch palace), and pi-subagents'
+ *  MCP_DIRECT_TOOLS. Every spawn starts clean. */
+const SCRUB_ENV_KEYS = ["MCP_DIRECT_TOOLS"] as const;
+const SCRUB_ENV_PREFIXES = ["PI_", "JITI_", "MEMPALACE_"] as const;
 
 interface ProbeLine {
 	ts: string;
@@ -197,7 +194,7 @@ function materialisePreChange(dest: string): { dir: string } | { skip: string } 
 		if (!ref) ref = git("merge-base", "HEAD", "origin/main");
 		const tar = `${dest}.tar`;
 		git("archive", "--format=tar", "-o", tar, ref);
-		execFileSync("mkdir", ["-p", dest]);
+		mkdirSync(dest, { recursive: true });
 		execFileSync("tar", ["-xf", tar, "-C", dest]);
 		return { dir: dest };
 	} catch {

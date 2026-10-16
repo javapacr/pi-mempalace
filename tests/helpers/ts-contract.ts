@@ -166,6 +166,18 @@ export function interfaceMembers(
 	return members;
 }
 
+/** The parents in `interface <name> extends A, B<T> {` as a set of
+ * whitespace-free names (empty when it extends nothing), or null when the
+ * interface is absent. Own members alone would miss a re-parenting drift. */
+export function interfaceExtends(src: string, name: string): Set<string> | null {
+	const norm = normalizeSource(src);
+	const m = new RegExp(`\\binterface ${name}\\b([^{]*)\\{`).exec(norm);
+	if (!m) return null;
+	const clause = /^\s*(?:<[^{]*?>)?\s*extends\s+([\s\S]*)$/.exec(m[1]);
+	if (!clause) return new Set();
+	return new Set(splitTopLevel(clause[1], [","]).map((p) => p.replace(/\s+/g, "")));
+}
+
 /** Key → string value of `const <name> = { key: "v", … }` (an `as const`
  * suffix and any quote style allowed), or null when absent. */
 export function stringObject(src: string, name: string): Map<string, string> | null {
