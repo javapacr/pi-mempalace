@@ -132,6 +132,23 @@ const SETTINGS_JSON = JSON.stringify(
 	"\t",
 );
 
+/** Stub `mempalace` CLI, first on every spawn's PATH. The real CLI reads
+ *  ~/.mempalace/config.json, which may point at a live shared store (qdrant)
+ *  whatever `--palace` says, so the parent wake-up text would change as other
+ *  sessions write and AC-A3's pre/post hashes would drift between spawns
+ *  (seen unsandboxed, W3). The stub prints a fixed wake-up text, so the hash
+ *  measures only the extension; every other subcommand (mine, sync, ...) is a
+ *  silent no-op, so spawns never write to a real palace. */
+const STUB_MEMPALACE = `#!/bin/sh
+for a in "$@"; do
+	if [ "$a" = "wake-up" ]; then
+		echo "Stub wake-up for the pi-mempalace int test."
+		exit 0
+	fi
+done
+exit 0
+`;
+
 // No pi.extensions manifest here: loading is hermetic via --no-extensions +
 // explicit --extension flags (see spawnPi). The manifest path also merges
 // AMBIENT packages from the default agent dir (pi-lens LSP etc.), which can
@@ -220,6 +237,7 @@ async function buildScratchAgent(root: string): Promise<string> {
 let runRoot = "";
 let workDir = "";
 let palaceDir = "";
+let stubBinDir = "";
 let agentDir = "";
 let linkedPreNodeModules = "";
 let preChange: { dir: string } | { skip: string } = { skip: "pre-change tree not prepared (pi binary missing)" };
@@ -277,6 +295,8 @@ async function spawnPi(opts: {
 		PI_CODING_AGENT_DIR: agentDir,
 		MEMPALACE_PALACE: palaceDir,
 		PROMPT_PROBE_DIR: probeDir,
+		// The stub mempalace CLI first on PATH (see STUB_MEMPALACE).
+		PATH: `${stubBinDir}:${process.env.PATH ?? ""}`,
 		...opts.env,
 	});
 
@@ -344,6 +364,10 @@ before(async () => {
 	await mkdir(palaceDir, { recursive: true });
 
 	agentDir = await buildScratchAgent(join(runRoot, "scratch"));
+
+	stubBinDir = join(runRoot, "bin");
+	await mkdir(stubBinDir, { recursive: true });
+	await writeFile(join(stubBinDir, "mempalace"), STUB_MEMPALACE, { mode: 0o755 });
 
 	preChange = materialisePreChange(join(runRoot, "pre-change"));
 	if ("dir" in preChange) {
