@@ -25,11 +25,16 @@ import {
 	writeProjectSettings,
 } from "./helpers/diary-harness";
 import {
+	HANDOFF_CHECKPOINT_NUDGE_TEXT,
 	HANDOFF_NUDGE_CUSTOM_TYPE,
 	HANDOFF_NUDGE_TEXT,
 	SETTLE_NUDGE_CUSTOM_TYPE,
 } from "../domain/diary-nudge";
-import { HANDOFF_CHANNELS } from "../domain/handoff-contract";
+import {
+	HANDOFF_CHANNELS,
+	HANDOFF_DRIFT_WARNING,
+	HANDOFF_WAIT_SELF_BOUND_MS,
+} from "../domain/handoff-contract";
 
 beforeEach(setupHermeticEnv);
 afterEach(restoreEnv);
@@ -556,5 +561,208 @@ describe("handoff nudge (W2)", () => {
 
 		assert.equal(h.sentMessages.length, 1);
 		assert.equal(h.sentMessages[0].message.customType, SETTLE_NUDGE_CUSTOM_TYPE);
+	});
+
+	it("H2 self-bound: a wait resolves after 125s when no settle ever arrives", async (t) => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		const timers = t.mock.timers;
+		// Enabled BEFORE the listener runs setTimeout — a real 125s timer would
+		// hang this test instead of firing on tick (D19).
+		timers.enable({ apis: ["setTimeout"] });
+		try {
+			const collector = waitCollector();
+			h.emitBus(
+				HANDOFF_CHANNELS.commandStart,
+				commandStartPayload("handoff", collector.waitUntil),
+			);
+			assert.equal(collector.promises.length, 1);
+			assert.ok(
+				!(await resolvedAfterFlush(collector.promises[0])),
+				"the wait is still open before the bound",
+			);
+			assert.ok(h.state.settleWaiterTimer !== null, "the self-bound is armed");
+
+			timers.tick(HANDOFF_WAIT_SELF_BOUND_MS);
+
+			assert.ok(
+				await resolvedAfterFlush(collector.promises[0]),
+				"the self-bound released the wait",
+			);
+			assert.equal(h.state.settleWaiters.length, 0);
+			assert.equal(
+				h.state.settleWaiterTimer,
+				null,
+				"the bound cleared its own timer",
+			);
+		} finally {
+			timers.reset();
+		}
+	});
+
+	it("H2 self-bound: a settle before the bound clears the timer and re-arms the next batch", async (t) => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		const timers = t.mock.timers;
+		timers.enable({ apis: ["setTimeout"] });
+		try {
+			// First waiter at t=0; the settle (well before the bound) releases
+			// it and must disarm its self-bound timer (D19).
+			const first = waitCollector();
+			h.emitBus(
+				HANDOFF_CHANNELS.commandStart,
+				commandStartPayload("handoff", first.waitUntil),
+			);
+			timers.tick(60_000);
+			await h.settle();
+			assert.ok(
+				await resolvedAfterFlush(first.promises[0]),
+				"the settle released the first wait",
+			);
+			assert.equal(
+				h.state.settleWaiterTimer,
+				null,
+				"the settle cleared the self-bound timer",
+			);
+
+			// The next batch gets its own full bound: registered at t=60s, so
+			// it must survive past the FIRST timer's would-be deadline (t=125s)
+			// — proof the stale timer really was cleared — and release at its
+				// own t=185s.
+			const second = waitCollector();
+			h.emitBus(
+				HANDOFF_CHANNELS.commandStart,
+				commandStartPayload("handoff", second.waitUntil),
+			);
+			assert.ok(h.state.settleWaiterTimer !== null, "a fresh timer armed");
+			timers.tick(65_001); // t=125_001 — past the stale deadline
+			assert.equal(
+				await resolvedAfterFlush(second.promises[0]),
+				false,
+				"the stale timer was cleared — this release would be its leak",
+			);
+			timers.tick(59_999); // t=185_000 — the batch's own bound
+			assert.ok(
+				await resolvedAfterFlush(second.promises[0]),
+				"the second batch's own self-bound released it",
+			);
+		} finally {
+			timers.reset();
+		}
+	});
+
+	it("H2 drift: unrecognised payloads warn once per session", async () => {
+		const seen: Array<{ msg: string; level: string | undefined }> = [];
+		const h = buildDiaryHarness({
+			notify: (msg, level) => seen.push({ msg, level }),
+		});
+		await h.sessionStart();
+
+		// Missing trigger, unknown trigger, and trigger:"handoff" without a
+		// function waitUntil — all drifted (D20); repeated after the latch.
+		h.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload(undefined));
+		h.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload("deploy"));
+		h.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload("handoff"));
+		h.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload("handoff"));
+
+		assert.equal(seen.length, 1, "one warning per session");
+		assert.deepEqual(seen[0], { msg: HANDOFF_DRIFT_WARNING, level: "warning" });
+		assert.equal(
+			h.sentMessages.length,
+			0,
+			"no diary turn runs for a drifted payload",
+		);
+	});
+
+	it("H2 drift: valid payloads and a bare /continue never warn", async () => {
+		const seen: Array<{ msg: string }> = [];
+		const h = buildDiaryHarness({
+			notify: (msg) => seen.push({ msg }),
+		});
+		await h.sessionStart();
+
+		h.emitBus(
+			HANDOFF_CHANNELS.commandStart,
+			commandStartPayload("handoff", waitCollector().waitUntil), // valid
+		);
+		h.emitBus(
+			HANDOFF_CHANNELS.commandStart,
+			commandStartPayload("continue", waitCollector().waitUntil), // bare /continue
+		);
+
+		assert.equal(seen.length, 0);
+		assert.equal(h.sentMessages.length, 1, "only the valid /handoff nudged");
+	});
+
+	it("H2 drift: sessions with H2 off never warn", async () => {
+		await writeProjectSettings({ diary_on_handoff: false });
+		const seen: Array<{ msg: string }> = [];
+		const h = buildDiaryHarness({
+			notify: (msg) => seen.push({ msg }),
+		});
+		await h.sessionStart();
+
+		h.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload(undefined));
+		h.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload("handoff"));
+
+		assert.equal(seen.length, 0, "the drift warning is gated like the nudge");
+		assert.equal(h.sentMessages.length, 0);
+	});
+
+	it("H2 checkpoint: a queued checkpoint switches the /handoff nudge to the checkpoint text", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		// agent_end queues the curation checkpoint at the 15th exchange; no run
+		// has started since, so it is still pending (D21).
+		for (let i = 0; i < 15; i++) await h.agentEnd(SESSION_FILE);
+		assert.ok(
+			h.sentMessages.some(
+				(m) =>
+					m.message.customType === "mempalace-autosave" &&
+					m.options.deliverAs === "nextTurn",
+			),
+			"the checkpoint is queued",
+		);
+
+		h.emitBus(
+			HANDOFF_CHANNELS.commandStart,
+			commandStartPayload("handoff", waitCollector().waitUntil),
+		);
+
+		assert.equal(h.sentMessages.length, 2);
+		const nudge = h.sentMessages[1];
+		assert.equal(nudge.message.customType, HANDOFF_NUDGE_CUSTOM_TYPE);
+		assert.equal(nudge.message.content, HANDOFF_CHECKPOINT_NUDGE_TEXT);
+		assert.deepEqual(nudge.options, {
+			triggerTurn: true,
+			deliverAs: "followUp",
+		});
+	});
+
+	it("H2 checkpoint: once a run has started, /handoff sends the standard text", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		for (let i = 0; i < 15; i++) await h.agentEnd(SESSION_FILE); // checkpoint queued, pending
+		assert.ok(h.state.checkpointPending);
+
+		// Any run start drains the pending nextTurn checkpoint (D21/E24) —
+		// the handoff nudge must go back to the standard text.
+		await h.agentStart();
+		assert.equal(
+			h.state.checkpointPending,
+			false,
+			"agent_start clears the pending checkpoint",
+		);
+
+		h.emitBus(
+			HANDOFF_CHANNELS.commandStart,
+			commandStartPayload("handoff", waitCollector().waitUntil),
+		);
+
+		const nudges = h.sentMessages.filter(
+			(m) => m.message.customType === HANDOFF_NUDGE_CUSTOM_TYPE,
+		);
+		assert.equal(nudges.length, 1);
+		assert.equal(nudges[0].message.content, HANDOFF_NUDGE_TEXT);
 	});
 });

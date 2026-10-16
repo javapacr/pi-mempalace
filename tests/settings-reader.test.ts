@@ -75,6 +75,7 @@ describe("readMempalaceSettings — precedence", () => {
 			recallOnPrompt: true,
 			diaryOnSettle: true,
 			diaryOnHandoff: true,
+			diarySettleMinToolCalls: 3,
 			children: { recall: false, curation: false },
 		});
 	});
@@ -361,6 +362,7 @@ describe("readMempalaceSettings — per-key validation", () => {
 			recallOnPrompt: true,
 			diaryOnSettle: true,
 			diaryOnHandoff: true,
+			diarySettleMinToolCalls: 3,
 			children: { recall: false, curation: false },
 		});
 	});

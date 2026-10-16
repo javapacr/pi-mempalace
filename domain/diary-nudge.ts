@@ -57,6 +57,10 @@ export interface SettleNudgeInput {
 	readonly nudgeRun: boolean;
 	/** The run already wrote a diary entry. */
 	readonly diaryWrittenThisRun: boolean;
+	/** Tool calls counted in the settling run (D18). */
+	readonly toolCallsThisRun: number;
+	/** `mempalace.diary_settle_min_tool_calls` (default 3; 0 = every settle). */
+	readonly minToolCalls: number;
 	/** agent_end queued the curation checkpoint this run (D17). The checkpoint
 	 * prompt already asks for a diary write (domain/curation-prompt.ts step 4),
 	 * and on pi ≥ 1.2 a settle nudge's own run drains the pending nextTurn
@@ -70,8 +74,8 @@ export interface SettleNudgeInput {
 /**
  * The settle gate: nudge only a real, primary, enabled TUI run with a diary
  * tool available, that has not already diarised, is not the nudge's own run,
- * is not inside a handoff, and did not just queue the curation checkpoint
- * (I1 gate list).
+ * is not inside a handoff, did not just queue the curation checkpoint, and
+ * made at least the activity threshold of tool calls (I1 gate list, D18).
  */
 export function shouldNudgeOnSettle(input: SettleNudgeInput): boolean {
 	return (
@@ -83,7 +87,8 @@ export function shouldNudgeOnSettle(input: SettleNudgeInput): boolean {
 		!input.handoffInProgress &&
 		!input.nudgeRun &&
 		!input.diaryWrittenThisRun &&
-		!input.checkpointQueued
+		!input.checkpointQueued &&
+		input.toolCallsThisRun >= input.minToolCalls
 	);
 }
 
@@ -119,3 +124,10 @@ export const HANDOFF_NUDGE_CUSTOM_TYPE = "mempalace-diary-handoff";
 /** Handoff nudge text (D16, used verbatim). */
 export const HANDOFF_NUDGE_TEXT =
 	"[MemPalace handoff diary] A handoff is about to snapshot this session. If the session produced anything durable that is not yet in your MemPalace diary, write one diary entry now with the diary-write tool. If nothing is durable, or a diary entry already exists, reply with one short line and stop. Start no new work, and do not call `continue` again — the handoff is already under way.";
+
+/** Checkpoint-variant handoff nudge text (D21, used verbatim): sent instead
+ * of HANDOFF_NUDGE_TEXT while a curation checkpoint is still queued — the
+ * turn the nudge joins will carry that checkpoint, so the text points at it
+ * instead of contradicting it. Same customType as the standard text. */
+export const HANDOFF_CHECKPOINT_NUDGE_TEXT =
+	"[MemPalace handoff diary] A handoff is about to snapshot this session, and a MemPalace curation checkpoint is queued with this turn. Complete that checkpoint now, concisely — it already includes the diary write — because the handoff is waiting on this turn. Then reply with one short line and stop. Start no other work, and do not call `continue` again — the handoff is already under way.";

@@ -70,6 +70,11 @@ describe("diary nudge gate (unit)", () => {
 			handoffInProgress: false,
 			nudgeRun: false,
 			diaryWrittenThisRun: false,
+			// D18 baseline sits exactly at the threshold, so the added gate
+			// stays in its nudging state here — the threshold's own behaviour
+			// is pinned by the harness-level `H1 threshold:` tests.
+			toolCallsThisRun: 3,
+			minToolCalls: 3,
 			checkpointQueued: false,
 			diaryToolRegistered: true,
 		};

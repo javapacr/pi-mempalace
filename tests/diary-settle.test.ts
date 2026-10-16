@@ -495,4 +495,71 @@ describe("settle nudge (W1)", () => {
 		assert.equal(h.sentMessages.length, 1, "only the nudge, no checkpoint");
 		assert.equal(h.sentMessages[0].message.customType, SETTLE_NUDGE_CUSTOM_TYPE);
 	});
+
+	it("H1 threshold: a run below the default three tool calls sends nothing, reaching it nudges", async () => {
+		// "default" keeps the real settings value (3) — the harness override
+		// is what lets the W1/W2 tests above settle tool-free runs (I7).
+		const h = buildDiaryHarness({ settleMinToolCalls: "default" });
+		await h.sessionStart();
+
+		// Two tool calls < 3: the qualifying settle stays quiet (D18).
+		await h.agentEnd(SESSION_FILE);
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.settle();
+		assert.equal(h.sentMessages.length, 0, "two calls sit below the default");
+
+		// A fresh run that reaches three tool calls nudges once.
+		await h.agentEnd(SESSION_FILE);
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.toolStart("edit");
+		await h.settle();
+		assert.equal(h.sentMessages.length, 1, "the third call crosses the threshold");
+		assert.equal(h.sentMessages[0].message.customType, SETTLE_NUDGE_CUSTOM_TYPE);
+	});
+
+	it("H1 threshold: zero nudges a tool-free run", async () => {
+		const h = buildDiaryHarness({ settleMinToolCalls: 0 });
+		await h.sessionStart();
+		await h.agentEnd(SESSION_FILE);
+
+		await h.settle();
+
+		assert.equal(h.sentMessages.length, 1, "0 restores every-settle (D18)");
+	});
+
+	it("H1 threshold: the count resets at every settle", async () => {
+		const h = buildDiaryHarness({ settleMinToolCalls: "default" }); // 3
+		await h.sessionStart();
+
+		// Run 1: exactly three calls → nudge.
+		await h.agentEnd(SESSION_FILE);
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.toolStart("edit");
+		await h.settle();
+		assert.equal(h.sentMessages.length, 1);
+
+		// The nudge's own run settles quiet (D11) and consumes the flag.
+		await h.agentEnd(SESSION_FILE);
+		await h.settle();
+
+		// Run 2: two more calls. With a carried-over count the gate would see
+		// 5 ≥ 3 and nudge again; the settle-time reset keeps it quiet (D18).
+		await h.agentEnd(SESSION_FILE);
+		await h.toolStart("read");
+		await h.toolStart("bash");
+		await h.settle();
+		assert.equal(
+			h.state.toolCallsThisRun,
+			0,
+			"the settle cleared the count even on the skipped settle",
+		);
+		assert.equal(
+			h.sentMessages.length,
+			1,
+			"the count never carries across settles",
+			);
+	});
 });

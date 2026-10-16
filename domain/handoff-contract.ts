@@ -1,14 +1,17 @@
 /**
  * pi-handoff shared-bus contract consumed by pi-mempalace (W1 channels, W2
- * payload docs and the command-start parser).
+ * payload docs, the command-start parser, and the W3 wait self-bound + drift
+ * warning).
  *
  * The two repos share no types and pi-mempalace takes no dependency on
  * pi-handoff, so this module is the single mirror of the contract. Pinned
- * to pi-handoff 838ac31 (javapacr/pi-handoff#3, merged by PR
- * javapacr/pi-handoff#4): its `domain/types.ts`
- * (`HandoffToolEventPayload`, `HandoffCommandPayloadBase`,
- * `HandoffCommandStartPayload`, `HandoffCommandCompletePayload`) and README
- * "Lifecycle events". A rename or shape drift on the pi-handoff side
+ * to pi-handoff e711e2b: its `domain/types.ts` (`HandoffToolEventPayload`,
+ * `HandoffCommandPayloadBase`, `HandoffCommandStartPayload`,
+ * `HandoffCommandCompletePayload`), `infrastructure/event-channels.ts`, and
+ * `application/handoff-executor.ts` (`HOOK_WAIT_CAP_MS`). H2 needs pi-handoff
+ * ≥ 838ac31 (javapacr/pi-handoff#3, merged by PR javapacr/pi-handoff#4);
+ * older installs leave the listeners inert and earn the one-per-session
+ * drift warning (D20). A rename or shape drift on the pi-handoff side
  * silently deafens these listeners or turns them inert (epic R2) — re-diff
  * this module against pi-handoff's `domain/types.ts` whenever pi-handoff
  * changes its contract.
@@ -21,6 +24,19 @@ export const HANDOFF_CHANNELS = {
 	/** Legacy channel: the continue tool pre-filled the editor. */
 	tuiFilledHandoff: "tui_filled_handoff",
 } as const;
+
+/**
+ * pi-mempalace's own deadline for registered settle waiters (D19): released
+ * here even when no settle ever arrives and pi-handoff's 120s cap fails
+ * too. Deliberately above pi-handoff's `HOOK_WAIT_CAP_MS` (120_000) so the
+ * primary deadline always wins — pinned by tests/handoff-contract-drift.test.ts.
+ */
+export const HANDOFF_WAIT_SELF_BOUND_MS = 125_000;
+
+/** One-per-session drift warning (D20, used verbatim): raised through the
+ * captured notify when a handoff_command_start cannot be acted on. */
+export const HANDOFF_DRIFT_WARNING =
+	"pi-mempalace: pi-handoff sent a handoff_command_start it does not recognise (missing trigger or waitUntil), so the /handoff diary turn is skipped. Update pi-handoff to 838ac31 or later, or check the pi-mempalace handoff contract.";
 
 // ── Payload shapes (D6, mirrors of pi-handoff domain/types.ts) ───────────────
 

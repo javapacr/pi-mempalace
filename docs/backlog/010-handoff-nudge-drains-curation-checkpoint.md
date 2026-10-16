@@ -1,6 +1,6 @@
 # 010 — Idle `/handoff` nudge run drains a pending curation checkpoint
 
-Status: open · P3 · accepted risk W2.R2 (user 2026-10-15, issue #3)
+Status: done — W3 (#6) · was accepted risk W2.R2 (user 2026-10-15, issue #3)
 
 ## Context
 
@@ -35,3 +35,13 @@ Decide how the `/handoff` leg treats a queued checkpoint. Options:
 - The decision is recorded here. If code changes, a test pins the behaviour of
   an idle `/handoff` with a queued checkpoint.
 - `npm run typecheck` and `npm test` stay green.
+
+## Decision
+
+2026-10-16 (user): combined nudge text. pi-mempalace tracks a pending
+checkpoint (set by the `agent_end` that queues it, cleared at the next
+`agent_start`); a `/handoff` while one is pending sends the
+checkpoint-variant handoff nudge, which asks the agent to finish the
+checkpoint concisely (it includes the diary write) and then stop. The
+wait stays bounded by pi-handoff's 120s cap and pi-mempalace's 125s
+self-bound. Pinned by the `H2 checkpoint:` tests.

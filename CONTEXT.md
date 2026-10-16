@@ -49,8 +49,24 @@ One of the resolvers collected from `/handoff`'s `waitUntil`; `agent_settled`, `
 _Avoid_: wait promise, handoff timer, waitUntil handle
 
 **handoff contract**:
-The pi-handoff event shapes pi-mempalace mirrors in `domain/handoff-contract.ts`, comment-pinned to pi-handoff 838ac31: the channel names, the `handoff_command_start`/`handoff_tool_start`/`handoff_command_complete` payloads with their `trigger`, and the synchronous `waitUntil` registration rule.
+The pi-handoff event shapes pi-mempalace mirrors in `domain/handoff-contract.ts`, comment-pinned to pi-handoff e711e2b (contract from 838ac31): the channel names, the `handoff_command_start`/`handoff_tool_start`/`handoff_command_complete` payloads with their `trigger`, and the synchronous `waitUntil` registration rule.
 _Avoid_: event schema, sibling API, D6 shapes (the decision, not the thing)
+
+**activity threshold**:
+The minimum number of tool calls a run must make before its settle may nudge — `mempalace.diary_settle_min_tool_calls`, default 3, 0 = every settle. Counted per run from `tool_execution_start`, reset at `agent_settled`.
+_Avoid_: tool budget, cooldown
+
+**wait self-bound**:
+pi-mempalace's own 125s ceiling on a `/handoff` wait it registered: an unref'd timer that releases the settle waiters if no settle arrives. Defence in depth behind pi-handoff's 120s cap; cleared by every other release.
+_Avoid_: handoff timeout (pi-handoff owns that)
+
+**drift warning**:
+The one-per-session notification raised when a `handoff_command_start` arrives in a shape pi-mempalace cannot act on (missing/unknown `trigger`, or `/handoff` without `waitUntil`), so a pi-handoff contract mismatch is visible instead of silently disabling the handoff nudge.
+_Avoid_: version error, compat check
+
+**checkpoint-variant nudge**:
+The handoff nudge text used when a curation checkpoint is still queued (pending from the `agent_end` that queued it until the next `agent_start`): it asks the agent to finish that checkpoint concisely — it includes the diary write — and then stop.
+_Avoid_: combined prompt, curation nudge
 
 **diary tool**:
 The MemPalace diary-write MCP tool, matched by the `mempalace_diary_write` name suffix across active and all registered tools; it must be registered directly — a tool reachable only through an MCP gateway leaves both nudges inert.
