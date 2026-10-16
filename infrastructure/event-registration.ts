@@ -24,10 +24,16 @@ import {
 	isDiaryToolName,
 	hasDiaryTool,
 	shouldNudgeOnSettle,
+	handoffNudgeAllowed,
 	SETTLE_NUDGE_CUSTOM_TYPE,
 	SETTLE_NUDGE_TEXT,
+	HANDOFF_NUDGE_CUSTOM_TYPE,
+	HANDOFF_NUDGE_TEXT,
 } from "../domain/diary-nudge";
-import { HANDOFF_CHANNELS } from "../domain/handoff-contract";
+import {
+	HANDOFF_CHANNELS,
+	parseHandoffCommandStart,
+} from "../domain/handoff-contract";
 import { formatRecallContext } from "../domain/recall-parser";
 import type { WakeUpUseCase } from "../application/wake-up.usecase";
 import type { RecallUseCase } from "../application/recall.usecase";
@@ -92,6 +98,24 @@ function diaryToolRegistered(pi: ExtensionAPI): boolean {
 	}
 }
 
+/**
+ * Release the promises registered with pi-handoff's `/handoff` waitUntil
+ * (D15): splices the array and calls each resolver in its own try/catch, so
+ * one bad resolver cannot skip the rest. Resolve-only — pi-handoff tolerates
+ * rejections (E12), but resolving keeps the contract trivial.
+ */
+function releaseSettleWaiters(state: SessionState): void {
+	const waiters = state.settleWaiters.splice(0);
+	for (const resolve of waiters) {
+		try {
+			resolve();
+		} catch {
+			// Never throw from a hook — pi-handoff owns the 120s deadline and
+			// attaches its own no-op rejection handler (E11/E12).
+		}
+	}
+}
+
 export function registerMempalaceEvents(
 	pi: ExtensionAPI,
 	state: SessionState,
@@ -112,8 +136,39 @@ export function registerMempalaceEvents(
 	// child) can still surface shared-bus `request-attention` signals.
 	let uiNotify: ExtensionUIContext["notify"] | undefined;
 
+	// The H2 nudge leg shared by both handoff paths (D7/D13/D16): one hidden
+	// followUp message; the pending-nudge flag is set only when the nudge
+	// starts a run of its own — mid-stream it drains inside the running run
+	// (R8), which then counts once, as usual.
+	const sendHandoffNudge = (): void => {
+		if (!state.agentRunActive) state.nudgeRunPending = true;
+		// Fire-and-forget by contract — pi owns the promise (E16).
+		pi.sendMessage(
+			{
+				customType: HANDOFF_NUDGE_CUSTOM_TYPE,
+				content: HANDOFF_NUDGE_TEXT,
+				display: false,
+			},
+			{ triggerTurn: true, deliverAs: "followUp" },
+		);
+	};
+
+	// Shared gate read for both handoff paths (D5/D12/R3): bus listeners get
+	// no ctx, so the child gate re-reads the env per event, like everywhere.
+	const handoffNudgePermitted = (): boolean =>
+		handoffNudgeAllowed({
+			isChild: resolveChildWakeupGate(process.env).isChild,
+			enabled:
+				state.settings?.diaryOnHandoff ??
+				DEFAULT_MEMPALACE_SETTINGS.diaryOnHandoff,
+			diaryToolRegistered: diaryToolRegistered(pi),
+		});
+
 	// ── session_start — reset counter + load wake-up context + sync skills + ensure MCP ──
 	pi.on("session_start", async (_event, ctx) => {
+		// Release /handoff waits BEFORE reset: reset would drop the resolvers
+		// and pi-handoff would sit out its full 120s (D15).
+		releaseSettleWaiters(state);
 		state.reset();
 		uiNotify = ctx.ui.notify.bind(ctx.ui);
 		// Capture this runtime's transcript file BEFORE any early return —
@@ -173,26 +228,6 @@ export function registerMempalaceEvents(
 	pi.events.on("request-attention", (data) => {
 		const { message } = parseRequestAttentionPayload(data);
 		uiNotify?.(message, "warning");
-	});
-
-	// ── handoff bus — the "handoff in progress" window (D8/D9) ─────────────
-	// Raised on the continue-tool path: `handoff_tool_start` (pi-handoff#3)
-	// and, until that ships, `tui_filled_handoff` — the installed pi-handoff
-	// continue tool emits it right before auto-submit, and without it H1
-	// would start a diary run on the very settle the auto-submit presses
-	// Enter on (R5). `handoff_command_complete` fires on every exit path
-	// (E10) and closes the window; so does the next interactive input. The
-	// /handoff leg (`handoff_command_start{trigger:"handoff"}`) lands with
-	// W2. Payloads are ignored: bus listeners get no ctx and a malformed
-	// payload must not throw.
-	pi.events.on(HANDOFF_CHANNELS.toolStart, () => {
-		state.handoffInProgress = true;
-	});
-	pi.events.on(HANDOFF_CHANNELS.tuiFilledHandoff, () => {
-		state.handoffInProgress = true;
-	});
-	pi.events.on(HANDOFF_CHANNELS.commandComplete, () => {
-		state.handoffInProgress = false;
 	});
 
 	// ── Manual sync command ─────────────────────────────────────────────────
@@ -390,12 +425,86 @@ export function registerMempalaceEvents(
 		if (isDiaryToolName(event.toolName)) state.diaryWrittenThisRun = true;
 	});
 
+	// ── handoff bus — the "handoff in progress" window + the H2 nudge (D8/D9/D13–D16) ──
+	// Both handoff paths open the window that keeps the settle nudge quiet
+	// and send one hidden diary nudge before pi-handoff snapshots. The window
+	// closes on `handoff_command_complete`, which fires on every exit path
+	// (E10), and on the next interactive input (the input handler below).
+	//  - `handoff_command_start{trigger:"handoff"}` — the /handoff leg below:
+	//    registers a settle waiter with the payload's waitUntil, synchronously.
+	//  - `handoff_tool_start` — the continue tool staged /continue: the nudge
+	//    is a followUp in the streaming run, deduped per session (D6).
+	// `tui_filled_handoff` keeps raising the window only: the installed
+	// pi-handoff continue tool emits it right before auto-submit, and without
+	// it H1 would start a diary run on the very settle the auto-submit presses
+	// Enter on (R5) — best-effort, not a contract (D9). Window payloads are
+	// ignored: bus listeners get no ctx and a malformed payload must not throw.
+	pi.events.on(HANDOFF_CHANNELS.toolStart, () => {
+		try {
+			// Presence itself stages a continue — payloads carry no trigger,
+			// and a malformed one must not throw.
+			state.handoffInProgress = true;
+			if (state.handoffToolNudged) return; // per-session dedupe (D6/R9)
+			if (!handoffNudgePermitted()) return;
+			state.handoffToolNudged = true;
+			sendHandoffNudge();
+		} catch {
+			// Never throw from a hook.
+		}
+	});
+	pi.events.on(HANDOFF_CHANNELS.tuiFilledHandoff, () => {
+		state.handoffInProgress = true;
+	});
+	pi.events.on(HANDOFF_CHANNELS.commandComplete, () => {
+		state.handoffInProgress = false;
+	});
+	// The /handoff leg (H2, D6/D13/D14/D15). pi.events is a plain EventEmitter
+	// and pi-handoff closes wait registration when the emit returns, so this
+	// listener stays synchronous — no async, no await before register().
+	pi.events.on(HANDOFF_CHANNELS.commandStart, (data) => {
+		try {
+			const { trigger, register } = parseHandoffCommandStart(data);
+			if (trigger !== "handoff") return; // bare /continue, missing or unknown trigger: nothing (D6/R2)
+			// Raise the window BEFORE the gates: D8 keeps the settle nudge quiet
+			// during a handoff even when H2 is switched off, and D14 keeps it
+			// when waitUntil is missing.
+			state.handoffInProgress = true;
+			if (register === null) return; // D14: without the wait, pi-handoff would snapshot mid-diary-turn
+			if (!handoffNudgePermitted()) return; // gates fail → no nudge → nothing to wait for either
+			// Resolve-only promise (D15): released on the next settle, aborted
+			// or not, and on teardown so pi-handoff never sits out its 120s.
+			const settled = new Promise<void>((resolve) => {
+				state.settleWaiters.push(resolve);
+			});
+			register(settled);
+			sendHandoffNudge();
+		} catch {
+			// Never throw from a hook — a lost nudge self-heals at the next
+			// handoff or settle. An already-registered wait is still released
+			// on the next settle or session teardown (D15); a lost registration
+			// is bounded by pi-handoff's 120s cap.
+		}
+	});
+
+	// ── agent_start — run-activity tracking for the handoff nudges (D13) ─────
+	// Bus listeners get no ctx and extension commands can run mid-stream (E15),
+	// so "is a run streaming?" is self-tracked: a handoff nudge sets the
+	// pending-nudge flag only when this is false (it starts a run of its own).
+	pi.on("agent_start", () => {
+		state.agentRunActive = true;
+	});
+
 	// ── agent_settled — one hidden diary nudge per qualifying settle (H1, D1) ──
 	// The nudge is a hidden followUp custom message; when the agent is idle
 	// pi defers the send until after these handlers and then runs it as its
 	// own agent turn (E14), so this handler only decides and sends.
 	pi.on("agent_settled", (event, ctx) => {
 		try {
+			// W2 prelude (D13/D15): the run is over, and every /handoff wait is
+			// satisfied by this settle — aborted or not. pi-handoff owns the
+			// 120s deadline, so resolving early is always safe.
+			state.agentRunActive = false;
+			releaseSettleWaiters(state);
 			// SAFETY: the locked dev types (0.87.1) type agent_settled as
 			// `{ type }` only, while the 1.1.0 runtime delivers `aborted`; the
 			// structural read keeps tsc green against both (D10). Absent →
@@ -483,6 +592,9 @@ export function registerMempalaceEvents(
 	// Fully synchronous: uses cached config + cached bin path so no
 	// pending promises or I/O handles block process exit.
 	pi.on("session_shutdown", (event, ctx) => {
+		// Teardown must never hold pi-handoff for its full 120s (D15): release
+		// the /handoff waits before the reload early return.
+		releaseSettleWaiters(state);
 		if (event.reason === "reload") return;
 		if (!state.config) return;
 		const sessionFile = state.sessionFile ?? ctx.sessionManager.getSessionFile();

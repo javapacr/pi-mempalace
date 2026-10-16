@@ -248,6 +248,10 @@ describe("settle nudge (W1)", () => {
 		const h = buildDiaryHarness();
 		await h.sessionStart();
 		await h.agentEnd(SESSION_FILE);
+		// W2: the continue tool fires inside a streaming run, and the
+		// handoff_tool_start listener now sends the H2 nudge — this test's
+		// subject stays H1, so stage the run and count only settle nudges.
+		await h.agentStart();
 		h.emitBus(HANDOFF_CHANNELS.toolStart, {
 			goal: "x",
 			command: "/continue",
@@ -255,7 +259,13 @@ describe("settle nudge (W1)", () => {
 
 		await h.settle();
 
-		assert.equal(h.sentMessages.length, 0);
+		assert.equal(
+			h.sentMessages.filter(
+				(m) => m.message.customType === SETTLE_NUDGE_CUSTOM_TYPE,
+			).length,
+			0,
+			"H1 stays quiet while a continue-tool handoff is under way (D8/D9)",
+		);
 	});
 
 	it("H1 quiet during handoff: tui_filled_handoff", async () => {
@@ -276,12 +286,22 @@ describe("settle nudge (W1)", () => {
 		const h = buildDiaryHarness();
 		await h.sessionStart();
 		await h.agentEnd(SESSION_FILE);
+		// Mid-stream staging (W2): the toolStart listener sends the H2 nudge
+		// without claiming the pending-nudge flag; this test's subject is the
+		// settle nudge resuming once the window closes.
+		await h.agentStart();
 		h.emitBus(HANDOFF_CHANNELS.toolStart, {});
 		h.emitBus(HANDOFF_CHANNELS.commandComplete, { trigger: "continue" });
 
 		await h.settle();
 
-		assert.equal(h.sentMessages.length, 1);
+		assert.equal(
+			h.sentMessages.filter(
+				(m) => m.message.customType === SETTLE_NUDGE_CUSTOM_TYPE,
+			).length,
+			1,
+			"exactly one settle nudge once the handoff completes",
+		);
 	});
 
 	it("H1 resumes after interactive input only", async () => {
@@ -333,7 +353,7 @@ describe("settle nudge (W1)", () => {
 		await h.sessionStart();
 		await h.agentEnd(SESSION_FILE);
 		await h.settle(); // pending-nudge flag set
-		h.emitBus(HANDOFF_CHANNELS.toolStart, {}); // handoff window raised
+		h.emitBus(HANDOFF_CHANNELS.tuiFilledHandoff, {}); // handoff window raised (D9 leg — toolStart now carries W2's nudge, covered in diary-handoff.test.ts)
 		await h.toolStart(DIARY_TOOL_NAME); // already-diarised mark
 		// checkpointQueuedThisRun never coexists with nudgeRunPending through the
 		// drivers — a queued checkpoint makes its own settle yield (D17) — so it

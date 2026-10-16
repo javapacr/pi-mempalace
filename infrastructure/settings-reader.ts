@@ -35,6 +35,7 @@ interface ParsedSettingsFile {
 	saveInterval?: number;
 	recallOnPrompt?: boolean;
 	diaryOnSettle?: boolean;
+	diaryOnHandoff?: boolean;
 	children?: Partial<MempalaceChildrenSettings>;
 }
 
@@ -91,6 +92,8 @@ function parseSettingsFile(
 			typeof m.recall_on_prompt === "boolean" ? m.recall_on_prompt : undefined,
 		diaryOnSettle:
 			typeof m.diary_on_settle === "boolean" ? m.diary_on_settle : undefined,
+		diaryOnHandoff:
+			typeof m.diary_on_handoff === "boolean" ? m.diary_on_handoff : undefined,
 	};
 	const children = m.children;
 	if (children && typeof children === "object" && !Array.isArray(children)) {
@@ -128,6 +131,10 @@ export async function readMempalaceSettings(
 			project.recallOnPrompt ?? user.recallOnPrompt ?? defaults.recallOnPrompt,
 		diaryOnSettle:
 			project.diaryOnSettle ?? user.diaryOnSettle ?? defaults.diaryOnSettle,
+		diaryOnHandoff:
+			project.diaryOnHandoff ??
+			user.diaryOnHandoff ??
+			defaults.diaryOnHandoff,
 		children: {
 			recall:
 				project.children?.recall ??
