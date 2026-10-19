@@ -14,12 +14,18 @@
  *    conversationCount; the tool-path followUp run counts once (I5, D11/R8)
  *  - H1 interaction: the settle nudge stays quiet on the /handoff leg of the
  *    handoff-in-progress window, and only `trigger:"handoff"` quiets it (D8)
+ *  - the /handoff cost gate (D22): a cold prompt cache (idle past the
+ *    PI_CACHE_RETENTION-derived or configured limit, or no assistant
+ *    message yet) or a zero activity count skips the nudge and the wait;
+ *    the continue-tool leg ignores it
  */
 
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
 	buildDiaryHarness,
+	DIARY_TOOL_NAME,
+	type DiaryHarness,
 	restoreEnv,
 	setupHermeticEnv,
 	writeProjectSettings,
@@ -68,6 +74,15 @@ async function resolvedAfterFlush(promise: Promise<unknown>): Promise<boolean> {
 	return resolved;
 }
 
+/**
+ * Pass the /handoff cost gate (D22): a just-ended assistant message (warm
+ * prompt cache) plus one tool call since the last diary write or nudge.
+ */
+async function warmWithActivity(h: DiaryHarness): Promise<void> {
+	await h.assistantMessage();
+	await h.toolStart("read");
+}
+
 /** A waitUntil spy: records the promises pi-mempalace registers. */
 function waitCollector() {
 	const promises: Promise<unknown>[] = [];
@@ -100,8 +115,9 @@ function toolStartPayload(): Record<string, unknown> {
 }
 
 describe("handoff nudge (W2)", () => {
-	it("H2 /handoff registers waitUntil synchronously and sends one hidden followUp nudge", () => {
+	it("H2 /handoff registers waitUntil synchronously and sends one hidden followUp nudge", async () => {
 		const h = buildDiaryHarness();
+		await warmWithActivity(h);
 
 		const collector = waitCollector();
 		const listenerResult = h.emitBus(
@@ -138,6 +154,7 @@ describe("handoff nudge (W2)", () => {
 		await h.sessionStart();
 
 		// Aborted settle still releases the wait (D15).
+		await warmWithActivity(h);
 		const abortedCollector = waitCollector();
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -156,6 +173,7 @@ describe("handoff nudge (W2)", () => {
 		);
 
 		// So does a normal one.
+		await warmWithActivity(h);
 		const cleanCollector = waitCollector();
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -174,6 +192,7 @@ describe("handoff nudge (W2)", () => {
 		await h.sessionStart();
 
 		// session_shutdown releases before its reload early return (D15).
+		await warmWithActivity(h);
 		const shutdownCollector = waitCollector();
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -187,6 +206,7 @@ describe("handoff nudge (W2)", () => {
 
 		// session_start releases BEFORE state.reset() (Gotcha: reset would
 		// drop the resolvers and pi-handoff would sit out its full 120s).
+		await warmWithActivity(h);
 		const restartCollector = waitCollector();
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -249,8 +269,9 @@ describe("handoff nudge (W2)", () => {
 		);
 	});
 
-	it("H2 contract: waitUntil is invoked as a method on the payload", () => {
+	it("H2 contract: waitUntil is invoked as a method on the payload", async () => {
 		const h = buildDiaryHarness();
+		await warmWithActivity(h);
 		// pi-handoff's collector reads `this` (Gotcha): a detached
 		// `const fn = payload.waitUntil; fn(p)` would lose it and throw inside
 		// the listener — the nudge would be lost with it.
@@ -331,6 +352,7 @@ describe("handoff nudge (W2)", () => {
 			allTools: [{ name: "mempalace-personal_mempalace_recall" }],
 		});
 		await h.sessionStart();
+		await warmWithActivity(h);
 
 		const collector = waitCollector();
 		h.emitBus(
@@ -352,6 +374,7 @@ describe("handoff nudge (W2)", () => {
 		await writeProjectSettings({ diary_on_handoff: false });
 		const h = buildDiaryHarness();
 		await h.sessionStart();
+		await warmWithActivity(h);
 
 		const collector = waitCollector();
 		h.emitBus(
@@ -370,6 +393,7 @@ describe("handoff nudge (W2)", () => {
 		await h.sessionStart();
 		// Per-event gate: the child env arrives only at the bus events (PRD A3).
 		process.env.PI_SUBAGENT_CHILD = "1";
+		await warmWithActivity(h);
 
 		const collector = waitCollector();
 		h.emitBus(
@@ -388,6 +412,7 @@ describe("handoff nudge (W2)", () => {
 		await h.sessionStart();
 		// 14 real exchanges: one more would hit the save_interval checkpoint.
 		for (let i = 0; i < 14; i++) await h.agentEnd(SESSION_FILE);
+		await warmWithActivity(h);
 
 		// /handoff nudge → its own run…
 		h.emitBus(
@@ -434,6 +459,7 @@ describe("handoff nudge (W2)", () => {
 		await h.agentStart();
 		await h.agentEnd(SESSION_FILE); // count 1
 		await h.settle(); // D13: this settle must clear agentRunActive
+		await warmWithActivity(h);
 
 		// Idle at /handoff → the nudge starts a run of its own (D13)…
 		const collector = waitCollector();
@@ -480,6 +506,7 @@ describe("handoff nudge (W2)", () => {
 		await h.sessionStart();
 		// Extension commands can run mid-stream (E15): stage a run first.
 		await h.agentStart();
+		await warmWithActivity(h);
 
 		const collector = waitCollector();
 		h.emitBus(
@@ -497,6 +524,7 @@ describe("handoff nudge (W2)", () => {
 		const h = buildDiaryHarness();
 		await h.sessionStart();
 		await h.agentEnd(SESSION_FILE); // arm H1
+		await warmWithActivity(h);
 
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -527,6 +555,7 @@ describe("handoff nudge (W2)", () => {
 		const h2 = buildDiaryHarness();
 		await h2.sessionStart();
 		await h2.agentEnd(SESSION_FILE);
+		await warmWithActivity(h2);
 		h2.emitBus(
 			HANDOFF_CHANNELS.commandStart,
 			commandStartPayload("handoff", waitCollector().waitUntil),
@@ -570,6 +599,7 @@ describe("handoff nudge (W2)", () => {
 		// right away — no wall-clock wait.
 		const real = buildDiaryHarness();
 		await real.sessionStart();
+		await warmWithActivity(real);
 		real.emitBus(
 			HANDOFF_CHANNELS.commandStart,
 			commandStartPayload("handoff", waitCollector().waitUntil),
@@ -582,6 +612,7 @@ describe("handoff nudge (W2)", () => {
 
 		const h = buildDiaryHarness();
 		await h.sessionStart();
+		await warmWithActivity(h);
 		const timers = t.mock.timers;
 		// Enabled BEFORE the listener runs setTimeout — a real 125s timer would
 		// hang this test instead of firing on tick (D19).
@@ -625,6 +656,7 @@ describe("handoff nudge (W2)", () => {
 	it("H2 self-bound: a settle before the bound clears the timer and re-arms the next batch", async (t) => {
 		const h = buildDiaryHarness();
 		await h.sessionStart();
+		await warmWithActivity(h);
 		const timers = t.mock.timers;
 		timers.enable({ apis: ["setTimeout"] });
 		try {
@@ -636,6 +668,8 @@ describe("handoff nudge (W2)", () => {
 				commandStartPayload("handoff", first.waitUntil),
 			);
 			const batchTimer = h.state.settleWaiterTimer;
+			// New activity re-arms the cost gate the first nudge zeroed (D22).
+			await h.toolStart("read");
 			// A second registration in the same batch reuses the armed timer —
 			// an orphaned extra timer could later release a newer batch early.
 			h.emitBus(
@@ -663,6 +697,7 @@ describe("handoff nudge (W2)", () => {
 			// it must survive past the FIRST timer's would-be deadline (t=125s)
 			// — proof the stale timer really was cleared — and release at its
 			// own t=185s.
+			await warmWithActivity(h);
 			const second = waitCollector();
 			h.emitBus(
 				HANDOFF_CHANNELS.commandStart,
@@ -732,6 +767,7 @@ describe("handoff nudge (W2)", () => {
 			notify: (msg) => seen.push({ msg }),
 		});
 		await h.sessionStart();
+		await warmWithActivity(h);
 
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -780,6 +816,10 @@ describe("handoff nudge (W2)", () => {
 		// stays pending until the next agent_start.
 		await h.settle();
 		assert.ok(h.state.checkpointPending, "pending survives the settle");
+		// Warm cache, but the checkpoint settle zeroed the activity count: the
+		// pending checkpoint alone carries the nudge past the cost gate (D22).
+		await h.assistantMessage();
+		assert.equal(h.state.toolCallsSinceDiary, 0);
 
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -810,6 +850,7 @@ describe("handoff nudge (W2)", () => {
 			false,
 			"agent_start clears the pending checkpoint",
 		);
+		await warmWithActivity(h);
 
 		h.emitBus(
 			HANDOFF_CHANNELS.commandStart,
@@ -827,5 +868,154 @@ describe("handoff nudge (W2)", () => {
 		assert.ok(h.state.checkpointPending);
 		await h.sessionStart();
 		assert.equal(h.state.checkpointPending, false, "reset() clears it");
+	});
+});
+
+describe("/handoff cost gate (D22)", () => {
+	/** Fire one /handoff and report what it did. */
+	function handoff(h: DiaryHarness) {
+		const collector = waitCollector();
+		const before = h.sentMessages.length;
+		h.emitBus(
+			HANDOFF_CHANNELS.commandStart,
+			commandStartPayload("handoff", collector.waitUntil),
+		);
+		return {
+			nudged: h.sentMessages.length - before,
+			waits: collector.promises.length,
+		};
+	}
+
+	it("cold cache: idle past the 4.5 min default sends no nudge and registers no wait", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.toolStart("read");
+		await h.assistantMessage({ timestamp: Date.now() - 270_001 });
+
+		const out = handoff(h);
+
+		assert.deepEqual(out, { nudged: 0, waits: 0 });
+		assert.equal(h.state.settleWaiters.length, 0);
+		assert.equal(h.state.settleWaiterTimer, null, "no self-bound armed");
+		assert.equal(h.state.nudgeRunPending, false);
+		assert.ok(h.state.handoffInProgress, "the window still rises (D8)");
+		assert.equal(h.state.toolCallsSinceDiary, 1, "a skipped nudge zeroes nothing");
+	});
+
+	it("cold cache: no assistant message yet counts as cold", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.toolStart("read");
+
+		assert.deepEqual(handoff(h), { nudged: 0, waits: 0 });
+	});
+
+	it("cold cache: PI_CACHE_RETENTION=long stretches the limit to 55 min", async () => {
+		process.env.PI_CACHE_RETENTION = "long";
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+
+		await h.toolStart("read");
+		await h.assistantMessage({ timestamp: Date.now() - 30 * 60_000 });
+		assert.deepEqual(handoff(h), { nudged: 1, waits: 1 }, "30 min idle is warm");
+		await h.settle();
+
+		await h.toolStart("read");
+		await h.assistantMessage({ timestamp: Date.now() - 3_300_001 });
+		assert.deepEqual(handoff(h), { nudged: 0, waits: 0 }, "past 55 min is cold");
+	});
+
+	it("cold cache: mempalace.diary_on_handoff_max_idle_ms overrides the derived limit", async () => {
+		process.env.PI_CACHE_RETENTION = "long";
+		await writeProjectSettings({ diary_on_handoff_max_idle_ms: 60_000 });
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+
+		await h.toolStart("read");
+		await h.assistantMessage({ timestamp: Date.now() - 120_000 });
+		assert.deepEqual(handoff(h), { nudged: 0, waits: 0 }, "2 min idle > 1 min limit");
+
+		await h.assistantMessage({ timestamp: Date.now() - 30_000 });
+		assert.deepEqual(handoff(h), { nudged: 1, waits: 1 }, "30s idle is warm");
+	});
+
+	it("warm with activity: nudges and waits as before", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.toolStart("read");
+		await h.assistantMessage({ timestamp: Date.now() - 60_000 });
+
+		assert.deepEqual(handoff(h), { nudged: 1, waits: 1 });
+		assert.equal(h.sentMessages[0].message.customType, HANDOFF_NUDGE_CUSTOM_TYPE);
+	});
+
+	it("warm but nothing new: toolCallsSinceDiary at 0 sends no nudge", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.toolStart("read");
+		await h.toolStart(DIARY_TOOL_NAME); // the diary write zeroes the count
+		await h.assistantMessage();
+		assert.equal(h.state.toolCallsSinceDiary, 0);
+
+		assert.deepEqual(handoff(h), { nudged: 0, waits: 0 });
+		assert.ok(h.state.handoffInProgress, "the window still rises (D8)");
+	});
+
+	it("warm but nothing new: a second /handoff after the first nudge sends nothing", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await warmWithActivity(h);
+
+		assert.deepEqual(handoff(h), { nudged: 1, waits: 1 });
+		await h.assistantMessage(); // the diary turn's reply
+		await h.settle();
+		assert.deepEqual(handoff(h), { nudged: 0, waits: 0 }, "the nudge zeroed the count");
+	});
+
+	it("message_end tracking: only clean assistant messages warm the cache", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.toolStart("read");
+
+		await h.assistantMessage({ role: "user" });
+		await h.assistantMessage({ role: "toolResult" });
+		await h.assistantMessage({ stopReason: "error" });
+		await h.assistantMessage({ stopReason: "aborted" });
+		assert.equal(h.state.lastAssistantAt, null, "none of these touched the cache");
+		assert.deepEqual(handoff(h), { nudged: 0, waits: 0 });
+
+		// A missing timestamp falls back to now; the handler returns nothing
+		// (a returned value would replace the message).
+		const result = await h.assistantMessage({ timestamp: undefined });
+		assert.equal(result, undefined);
+		assert.ok(h.state.lastAssistantAt !== null);
+		assert.ok(Date.now() - h.state.lastAssistantAt < 5_000);
+
+		// session_start's reset() forgets it.
+		await h.sessionStart();
+		assert.equal(h.state.lastAssistantAt, null);
+	});
+
+	it("tool leg unaffected: handoff_tool_start nudges on a cold cache with no activity", async () => {
+		const h = buildDiaryHarness();
+		await h.sessionStart();
+		await h.agentStart();
+		assert.equal(h.state.lastAssistantAt, null);
+		assert.equal(h.state.toolCallsSinceDiary, 0);
+
+		h.emitBus(HANDOFF_CHANNELS.toolStart, toolStartPayload());
+
+		assert.equal(h.sentMessages.length, 1);
+		assert.equal(h.sentMessages[0].message.customType, HANDOFF_NUDGE_CUSTOM_TYPE);
+	});
+
+	it("drift detection still warns on a cold cache", async () => {
+		const seen: string[] = [];
+		const h = buildDiaryHarness({ notify: (msg) => seen.push(msg) });
+		await h.sessionStart();
+
+		h.emitBus(HANDOFF_CHANNELS.commandStart, commandStartPayload("handoff"));
+
+		assert.deepEqual(seen, [HANDOFF_DRIFT_WARNING]);
 	});
 });

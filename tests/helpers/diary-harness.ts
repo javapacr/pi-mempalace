@@ -34,6 +34,9 @@ const GATE_ENV_KEYS = [
 	"PI_MEMPALACE_CHILD_WAKEUP_AGENTS",
 	"MEMPALACE_PALACE",
 	"PI_CODING_AGENT_DIR",
+	// The /handoff cold-cache limit derives from it (D22); pi-cache-optimizer
+	// exports it as "long", so a leaked value would shift every default.
+	"PI_CACHE_RETENTION",
 ] as const;
 
 let savedEnv: Record<string, string | undefined> = {};
@@ -97,6 +100,14 @@ export interface DiaryHarness {
 	agentStart(): Promise<unknown>;
 	agentEnd(sessionFile: string | null): Promise<unknown>;
 	toolStart(toolName: string): Promise<unknown>;
+	/** End one assistant message (message_end): feeds the /handoff
+	 *  cold-cache gate (D22). `timestamp` is the message's request-start time
+	 *  (default now); `stopReason` defaults to "stop". */
+	assistantMessage(opts?: {
+		timestamp?: unknown;
+		stopReason?: string;
+		role?: string;
+	}): Promise<unknown>;
 	settle(opts?: {
 		/** Value delivered on the event; pi ≥ 1.1 always sends a boolean
 		 *  (default false). Non-boolean values pass through untyped on purpose,
@@ -267,6 +278,23 @@ export function buildDiaryHarness(
 			drive(
 				"tool_execution_start",
 				{ type: "tool_execution_start", toolCallId: "call-1", toolName, args: {} },
+				ctxFor(),
+			),
+		assistantMessage: (msgOpts) =>
+			drive(
+				"message_end",
+				{
+					type: "message_end",
+					message: {
+						role: msgOpts?.role ?? "assistant",
+						content: [],
+						stopReason: msgOpts?.stopReason ?? "stop",
+						timestamp:
+							msgOpts && "timestamp" in msgOpts
+								? msgOpts.timestamp
+								: Date.now(),
+					},
+				},
 				ctxFor(),
 			),
 		settle: (settleOpts) => {

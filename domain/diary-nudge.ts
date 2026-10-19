@@ -120,6 +120,65 @@ export function handoffNudgeAllowed(input: HandoffNudgeInput): boolean {
 	return !input.isChild && input.enabled && input.diaryToolRegistered;
 }
 
+/** Default /handoff max idle under Anthropic's 5-minute prompt-cache TTL:
+ * 4.5 min, leaving 30s of margin (D22). */
+export const HANDOFF_MAX_IDLE_SHORT_MS = 270_000;
+
+/** Default /handoff max idle under the 1-hour TTL that `PI_CACHE_RETENTION=long`
+ * selects: 55 min, leaving 5 min of margin (D22). */
+export const HANDOFF_MAX_IDLE_LONG_MS = 3_300_000;
+
+/**
+ * The idle limit past which the /handoff nudge counts the prompt cache as
+ * cold (D22): `mempalace.diary_on_handoff_max_idle_ms` when set, else the
+ * default for the cache retention pi-ai uses — `PI_CACHE_RETENTION=long`
+ * selects the 1-hour TTL, anything else the 5-minute one.
+ */
+export function resolveHandoffMaxIdleMs(
+	setting: number | undefined,
+	cacheRetention: string | undefined,
+): number {
+	if (setting !== undefined) return setting;
+	return cacheRetention === "long"
+		? HANDOFF_MAX_IDLE_LONG_MS
+		: HANDOFF_MAX_IDLE_SHORT_MS;
+}
+
+/** Inputs to the /handoff cost gate (D22), gathered by the
+ * handoff_command_start listener. */
+export interface HandoffCommandNudgeInput {
+	/** Request-start time (ms) of the last assistant message that reached the
+	 * provider; null = none yet this session. */
+	readonly lastAssistantAt: number | null;
+	/** Current time (ms). */
+	readonly now: number;
+	/** Idle limit from resolveHandoffMaxIdleMs. */
+	readonly maxIdleMs: number;
+	/** Tool calls since the last diary write or diary nudge (D18). */
+	readonly toolCallsSinceDiary: number;
+	/** A curation checkpoint is queued and not yet run (D21). */
+	readonly checkpointPending: boolean;
+}
+
+/**
+ * The /handoff cost gate (D22): the nudge is one in-session model turn, and
+ * after an idle gap past the prompt-cache TTL that turn rewrites the whole
+ * context into the cache (over $1 on a large session) for a diary entry
+ * pi-handoff's skipTools strips from the snapshot anyway. Send it only when
+ * the cache is still warm AND there is something to diarise: tool activity
+ * since the last diary write or nudge, or a queued curation checkpoint the
+ * nudge turn would run (the checkpoint's settle already zeroed the count, but
+ * its diary write has not happened yet). No assistant message yet counts as
+ * cold. The continue-tool leg never asks: it fires mid-run, on a warm cache.
+ */
+export function handoffCommandNudgeWorthwhile(
+	input: HandoffCommandNudgeInput,
+): boolean {
+	if (input.lastAssistantAt === null) return false;
+	if (input.now - input.lastAssistantAt > input.maxIdleMs) return false;
+	return input.toolCallsSinceDiary > 0 || input.checkpointPending;
+}
+
 /** customType of the hidden handoff nudge (D16). */
 export const HANDOFF_NUDGE_CUSTOM_TYPE = "mempalace-diary-handoff";
 

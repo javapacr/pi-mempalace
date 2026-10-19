@@ -651,6 +651,7 @@ describe("settle nudge (W1)", () => {
 		await h.sessionStart();
 		await h.toolStart("read");
 		await h.toolStart("bash");
+		await h.assistantMessage(); // warm cache for the /handoff cost gate (D22)
 		h.emitBus(HANDOFF_CHANNELS.commandStart, {
 			goal: null,
 			quickMode: false,

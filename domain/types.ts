@@ -53,6 +53,11 @@ export interface MempalaceSettings {
 	/** Handoff diary nudge switch; false stops the before-snapshot diary prompt
 	 * on both pi-handoff paths. Default true. */
 	readonly diaryOnHandoff: boolean;
+	/** /handoff cold-cache limit (D22): past this many ms since the last
+	 * assistant request, the /handoff nudge is skipped. Positive integer;
+	 * undefined = derive from PI_CACHE_RETENTION (4.5 min, or 55 min when
+	 * "long"). The continue-tool leg ignores it. */
+	readonly diaryOnHandoffMaxIdleMs: number | undefined;
 	/** Minimum tool calls a run must make before its settle nudge may fire
 	 * (D18); non-negative integer, default 3; 0 restores every-settle. */
 	readonly diarySettleMinToolCalls: number;
@@ -67,6 +72,7 @@ export const DEFAULT_MEMPALACE_SETTINGS: MempalaceSettings = {
 	recallOnPrompt: true,
 	diaryOnSettle: true,
 	diaryOnHandoff: true,
+	diaryOnHandoffMaxIdleMs: undefined,
 	diarySettleMinToolCalls: 3,
 	children: { recall: false, curation: false },
 };
@@ -138,6 +144,12 @@ export class SessionState {
 	 * that sends the settle nudge, by the settle of a nudge run or of a run
 	 * that queued the curation checkpoint, and by a handoff nudge. */
 	toolCallsSinceDiary = 0;
+	/** Request-start time (ms, the message's own timestamp) of the last
+	 * assistant message that ended without a provider error or abort (D22):
+	 * the /handoff nudge reads it to tell a warm prompt cache from a cold one.
+	 * Bus listeners get no ctx, so it is self-tracked at message_end; null =
+	 * no assistant message yet this session (treated as cold). */
+	lastAssistantAt: number | null = null;
 	/** A curation checkpoint is queued and no run has started since (D21):
 	 * set by the agent_end that queues it, cleared at the next agent_start
 	 * (any run start drains the pending nextTurn message). Chooses the
@@ -182,6 +194,7 @@ export class SessionState {
 		this.nudgeRunPending = false;
 		this.diaryWrittenThisRun = false;
 		this.toolCallsSinceDiary = 0;
+		this.lastAssistantAt = null;
 		this.checkpointQueuedThisRun = false;
 		this.checkpointPending = false;
 		this.handoffDriftWarned = false;
