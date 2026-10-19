@@ -10,6 +10,11 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+	HANDOFF_MAX_IDLE_LONG_MS,
+	HANDOFF_MAX_IDLE_SHORT_MS,
+	handoffCommandNudgeWorthwhile,
+	resolveHandoffMaxIdleMs,
+	type HandoffCommandNudgeInput,
 	hasDiaryTool,
 	isDiaryToolName,
 	shouldNudgeOnSettle,
@@ -100,5 +105,43 @@ describe("diary nudge gate (unit)", () => {
 				`${field} flipped must gate the nudge off`,
 			);
 		}
+	});
+});
+
+describe("/handoff cost gate (unit, D22)", () => {
+	it("resolveHandoffMaxIdleMs: setting wins, else derived from PI_CACHE_RETENTION", () => {
+		assert.equal(resolveHandoffMaxIdleMs(undefined, undefined), 270_000);
+		assert.equal(resolveHandoffMaxIdleMs(undefined, "short"), HANDOFF_MAX_IDLE_SHORT_MS);
+		assert.equal(resolveHandoffMaxIdleMs(undefined, "long"), 3_300_000);
+		assert.equal(resolveHandoffMaxIdleMs(undefined, "long"), HANDOFF_MAX_IDLE_LONG_MS);
+		assert.equal(resolveHandoffMaxIdleMs(60_000, "long"), 60_000);
+	});
+
+	const warm: HandoffCommandNudgeInput = {
+		lastAssistantAt: 1_000_000,
+		now: 1_000_000 + 270_000,
+		maxIdleMs: 270_000,
+		toolCallsSinceDiary: 1,
+		checkpointPending: false,
+	};
+
+	it("warm cache with activity passes; exactly at the limit is still warm", () => {
+		assert.equal(handoffCommandNudgeWorthwhile(warm), true);
+	});
+
+	it("cold cache or no assistant message yet fails", () => {
+		assert.equal(handoffCommandNudgeWorthwhile({ ...warm, now: warm.now + 1 }), false);
+		assert.equal(handoffCommandNudgeWorthwhile({ ...warm, lastAssistantAt: null }), false);
+	});
+
+	it("nothing to diarise fails unless a checkpoint is pending", () => {
+		const idle = { ...warm, toolCallsSinceDiary: 0 };
+		assert.equal(handoffCommandNudgeWorthwhile(idle), false);
+		assert.equal(handoffCommandNudgeWorthwhile({ ...idle, checkpointPending: true }), true);
+		// A pending checkpoint never overrides a cold cache.
+		assert.equal(
+			handoffCommandNudgeWorthwhile({ ...idle, checkpointPending: true, lastAssistantAt: null }),
+			false,
+		);
 	});
 });

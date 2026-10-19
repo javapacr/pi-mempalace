@@ -25,6 +25,8 @@ import {
 	hasDiaryTool,
 	shouldNudgeOnSettle,
 	handoffNudgeAllowed,
+	handoffCommandNudgeWorthwhile,
+	resolveHandoffMaxIdleMs,
 	SETTLE_NUDGE_CUSTOM_TYPE,
 	SETTLE_NUDGE_TEXT,
 	HANDOFF_NUDGE_CUSTOM_TYPE,
@@ -454,6 +456,33 @@ export function registerMempalaceEvents(
 		state.toolCallsSinceDiary++;
 	});
 
+	// ── message_end — prompt-cache warmth for the /handoff cost gate (D22) ──
+	// Bus listeners get no ctx, so the last provider request is self-tracked.
+	// The assistant message's own timestamp is stamped when its request
+	// starts, before the cache is read or written — the earliest, so the most
+	// conservative, mark of the last cache touch. Error and aborted messages
+	// are skipped: they may never have reached the cache. A missing timestamp
+	// falls back to now. Never throws, never replaces the message.
+	pi.on("message_end", (event) => {
+		try {
+			const message = event.message as {
+				role?: unknown;
+				stopReason?: unknown;
+				timestamp?: unknown;
+			};
+			if (message?.role !== "assistant") return;
+			if (message.stopReason === "error" || message.stopReason === "aborted")
+				return;
+			state.lastAssistantAt =
+				typeof message.timestamp === "number" &&
+				Number.isFinite(message.timestamp)
+					? message.timestamp
+					: Date.now();
+		} catch {
+			// Never throw from a hook.
+		}
+	});
+
 	// ── handoff bus — the "handoff in progress" window + the H2 nudge (D8/D9/D13–D16) ──
 	// Both handoff paths open the window that keeps the settle nudge quiet
 	// and send one hidden diary nudge before pi-handoff snapshots. The window
@@ -461,8 +490,10 @@ export function registerMempalaceEvents(
 	// (E10), and on the next interactive input (the input handler below).
 	//  - `handoff_command_start{trigger:"handoff"}` — the /handoff leg below:
 	//    registers a settle waiter with the payload's waitUntil, synchronously.
+	//    Skipped on a cold prompt cache or with nothing new to diarise (D22).
 	//  - `handoff_tool_start` — the continue tool staged /continue: the nudge
-	//    is a followUp in the streaming run, deduped per session (D6).
+	//    is a followUp in the streaming run, deduped per session (D6). No cost
+	//    gate: it fires mid-run, so the cache is always warm.
 	// `tui_filled_handoff` keeps raising the window only: the installed
 	// pi-handoff continue tool emits it right before auto-submit, and without
 	// it H1 would start a diary run on the very settle the auto-submit presses
@@ -518,6 +549,22 @@ export function registerMempalaceEvents(
 			state.handoffInProgress = true;
 			if (register === null) return; // D14: without the wait, pi-handoff would snapshot mid-diary-turn
 			if (!handoffNudgePermitted()) return; // gates fail → no nudge → nothing to wait for either
+			// D22 cost gate: a cold cache would rewrite the whole context for a
+			// diary entry the snapshot strips anyway, and a zero activity count
+			// means it is already diarised. No nudge → no wait either.
+			if (
+				!handoffCommandNudgeWorthwhile({
+					lastAssistantAt: state.lastAssistantAt,
+					now: Date.now(),
+					maxIdleMs: resolveHandoffMaxIdleMs(
+						state.settings?.diaryOnHandoffMaxIdleMs,
+						process.env.PI_CACHE_RETENTION,
+					),
+					toolCallsSinceDiary: state.toolCallsSinceDiary,
+					checkpointPending: state.checkpointPending,
+				})
+			)
+				return;
 			// Resolve-only promise (D15): released on the next settle, aborted
 			// or not, and on teardown so pi-handoff never sits out its 120s.
 			const settled = new Promise<void>((resolve) => {

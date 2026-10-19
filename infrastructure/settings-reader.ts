@@ -15,7 +15,8 @@
  * a wrong-typed value falls through to the other file, then to
  * DEFAULT_MEMPALACE_SETTINGS ("" palace counts as unset; save_interval must
  * be a positive integer; boolean keys must be booleans;
- * diary_settle_min_tool_calls must be a non-negative integer).
+ * diary_settle_min_tool_calls must be a non-negative integer;
+ * diary_on_handoff_max_idle_ms must be a positive integer).
  */
 
 import { readFile } from "node:fs/promises";
@@ -37,6 +38,7 @@ interface ParsedSettingsFile {
 	recallOnPrompt?: boolean;
 	diaryOnSettle?: boolean;
 	diaryOnHandoff?: boolean;
+	diaryOnHandoffMaxIdleMs?: number;
 	diarySettleMinToolCalls?: number;
 	children?: Partial<MempalaceChildrenSettings>;
 }
@@ -96,6 +98,12 @@ function parseSettingsFile(
 			typeof m.diary_on_settle === "boolean" ? m.diary_on_settle : undefined,
 		diaryOnHandoff:
 			typeof m.diary_on_handoff === "boolean" ? m.diary_on_handoff : undefined,
+		diaryOnHandoffMaxIdleMs:
+			typeof m.diary_on_handoff_max_idle_ms === "number" &&
+			Number.isInteger(m.diary_on_handoff_max_idle_ms) &&
+			m.diary_on_handoff_max_idle_ms > 0
+				? m.diary_on_handoff_max_idle_ms
+				: undefined,
 		diarySettleMinToolCalls:
 			typeof m.diary_settle_min_tool_calls === "number" &&
 			Number.isInteger(m.diary_settle_min_tool_calls) &&
@@ -143,6 +151,10 @@ export async function readMempalaceSettings(
 			project.diaryOnHandoff ??
 			user.diaryOnHandoff ??
 			defaults.diaryOnHandoff,
+		diaryOnHandoffMaxIdleMs:
+			project.diaryOnHandoffMaxIdleMs ??
+			user.diaryOnHandoffMaxIdleMs ??
+			defaults.diaryOnHandoffMaxIdleMs,
 		diarySettleMinToolCalls:
 			project.diarySettleMinToolCalls ??
 			user.diarySettleMinToolCalls ??

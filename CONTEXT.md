@@ -41,7 +41,7 @@ The `SessionState` flag raised by pi-handoff's bus events (`handoff_command_star
 _Avoid_: handoff state, handoff lock, handoff mode
 
 **handoff nudge**:
-The hidden custom message (`mempalace-diary-handoff`) sent when pi-handoff stages a handoff — from `/handoff`'s `handoff_command_start` (only `trigger:"handoff"`, with a registered settle waiter) or the continue tool's `handoff_tool_start` (deduped per session) — asking for one diary entry before the snapshot, a one-line skip otherwise, no new work, and never a second `continue`.
+The hidden custom message (`mempalace-diary-handoff`) sent when pi-handoff stages a handoff — from `/handoff`'s `handoff_command_start` (only `trigger:"handoff"`, with a registered settle waiter, past the handoff cost gate) or the continue tool's `handoff_tool_start` (deduped per session) — asking for one diary entry before the snapshot, a one-line skip otherwise, no new work, and never a second `continue`.
 _Avoid_: handoff prompt, pre-handoff reminder (pi-handoff's removed diary reminder)
 
 **settle waiter**:
@@ -63,6 +63,10 @@ _Avoid_: handoff timeout (pi-handoff owns that)
 **drift warning**:
 The one-per-session notification raised when a `handoff_command_start` arrives in a shape pi-mempalace cannot act on (missing/unknown `trigger`, or `/handoff` without `waitUntil`), so a pi-handoff contract mismatch is visible instead of silently disabling the handoff nudge.
 _Avoid_: version error, compat check
+
+**handoff cost gate**:
+The `/handoff`-only check that skips the handoff nudge (and its settle waiter) when the turn would be wasted spend: a cold prompt cache — the last clean assistant message started longer ago than `mempalace.diary_on_handoff_max_idle_ms` (unset → 4.5 min, or 55 min under `PI_CACHE_RETENTION=long`), or none yet — or nothing new to diarise (activity count 0 and no curation checkpoint queued). The continue-tool leg has none: it fires mid-run, on a warm cache.
+_Avoid_: cache check, idle gate, TTL gate
 
 **checkpoint-variant nudge**:
 The handoff nudge text used when a curation checkpoint is still queued (pending from the `agent_end` that queued it until the next `agent_start`): it asks the agent to finish that checkpoint concisely — it includes the diary write — and then stop.
