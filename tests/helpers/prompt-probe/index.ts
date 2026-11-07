@@ -10,6 +10,14 @@
  * `event.systemPrompt` is a live getter in pi >= 0.86, so a probe registered
  * last sees sections set by earlier handlers.
  *
+ * It also hooks `context` (fired before each LLM call with the run's
+ * messages) and appends one line per call to `$PROMPT_PROBE_DIR/context.jsonl`:
+ *
+ *   { ts, wakeUpMessages, wakeUpSha256 }
+ *
+ * — the count of `mempalace-wakeup` custom messages in the context: the
+ * wake-up travels as a conversation message, never a prompt section.
+ *
  * PII discipline (security F6, PRD §9): writes HASH + LENGTH + marker FLAG
  * only — never the raw system prompt. `task` records the first 80 chars of
  * the prompt purely to prove sibling tasks differ; it is the task string
@@ -27,6 +35,28 @@ import type {
 let turnCount = 0;
 
 export default function promptProbeExtension(pi: ExtensionAPI): void {
+	pi.on("context", (event) => {
+		const dir = process.env.PROMPT_PROBE_DIR;
+		if (!dir) return;
+		const wakeUps = event.messages.filter(
+			(m) =>
+				(m as { role?: string }).role === "custom" &&
+				(m as { customType?: string }).customType === "mempalace-wakeup",
+		);
+		// Hash only — the wake-up text is palace content (PII discipline).
+		const wakeUpSha256 = createHash("sha256")
+			.update(JSON.stringify(wakeUps.map((m) => (m as { content?: unknown }).content)))
+			.digest("hex");
+		appendFileSync(
+			join(dir, "context.jsonl"),
+			JSON.stringify({
+				ts: new Date().toISOString(),
+				wakeUpMessages: wakeUps.length,
+				wakeUpSha256,
+			}) + "\n",
+		);
+	});
+
 	pi.on("before_agent_start", (event: BeforeAgentStartEvent) => {
 		turnCount += 1;
 		const dir = process.env.PROMPT_PROBE_DIR;

@@ -6,10 +6,13 @@
  *  - AC-A5: recording wakeUp stub — child env: 0 execute calls across
  *    session_start + 2 turns; parent env: exactly 1; hatch: 1.
  *  - AC-A2: under child env with a recall hit, before_agent_start returns
- *    the RECALL_CUSTOM_TYPE message and sets NO wake-up prompt section.
- *  - Wake-up goes into systemPromptOptions.sections.mempalace on every turn
- *    (short prompts included) and never as a returned systemPrompt; hosts
- *    without sections (pi < 0.86) skip injection and log once.
+ *    the RECALL_CUSTOM_TYPE message and NO wake-up message.
+ *  - Wake-up is one persisted `mempalace-wakeup` conversation message on the
+ *    first run of a new session — never a system-prompt section or a
+ *    returned systemPrompt; the harness persists returned messages as
+ *    session entries, like pi, so later turns see them. Session lifecycle
+ *    (resume, compaction, recall stability) lives in
+ *    wake-up-message.test.ts.
  *  - A1 over-gate pin: child session_start still resolves the palace
  *    config (session_shutdown mining) while skipping wake-up.
  *  - A3 per-event hatch: flipping PI_MEMPALACE_CHILD_WAKEUP between turns
@@ -41,6 +44,13 @@ import type { WakeUpUseCase } from "../application/wake-up.usecase";
 import type { RecallUseCase } from "../application/recall.usecase";
 import type { CurationUseCase } from "../application/curation.usecase";
 import type { MiningUseCase } from "../application/mining.usecase";
+import {
+	WAKEUP_CUSTOM_TYPE,
+	formatWakeUpMessage,
+} from "../domain/wake-up-message";
+
+/** The framed wake-up message content for the stub CLI's text. */
+const WAKE = formatWakeUpMessage("WAKE-UP-CONTENT");
 
 // ── resolveChildWakeupGate truth table (AC-A4) ───────────────────────────────
 
@@ -264,14 +274,35 @@ interface Harness {
 	driveSessionStart(mode?: string, sessionFile?: string | null): Promise<void>;
 	driveTurn(
 		prompt?: string,
-		opts?: { noSections?: boolean },
-	): Promise<Record<string, unknown> | undefined>;
-	/** `systemPromptOptions.sections` of the last driven turn (undefined with noSections). */
-	lastSections: Record<string, string> | undefined;
+		opts?: { noBranch?: boolean },
+	): Promise<TurnResult>;
+	/** Session entries; the model context is the same list (no compaction here). */
+	entries: Array<Record<string, unknown>>;
 	driveBeforeCompact(sessionFile: string | null): Promise<void>;
 	driveAgentEnd(sessionFile: string | null): Promise<void>;
 	driveShutdown(reason: string, sessionFile: string | null): Promise<void>;
 }
+
+/** A message a before_agent_start handler returned for the run. */
+interface TurnMessage {
+	customType: string;
+	content: string;
+	display: boolean;
+	details?: unknown;
+}
+
+interface TurnResult {
+	messages: TurnMessage[];
+	/** Some handler returned a `systemPrompt` (must never happen). */
+	systemPromptForced: boolean;
+	/** `systemPromptOptions.sections` after the handlers ran (must stay empty). */
+	sections: Record<string, string>;
+}
+
+const wakeUpsOf = (r: TurnResult) =>
+	r.messages.filter((m) => m.customType === WAKEUP_CUSTOM_TYPE);
+const recallOf = (r: TurnResult) =>
+	r.messages.find((m) => m.customType === RECALL_CUSTOM_TYPE);
 
 const GATE_ENV_KEYS = [
 	"PI_SUBAGENT_CHILD",
@@ -309,6 +340,15 @@ function buildHarness(recallHits: SearchResult): Harness {
 	const mineSyncCalls: string[] = [];
 	const mineBackgroundCalls: string[] = [];
 	const sentMessages: Array<{ message: unknown; options: unknown }> = [];
+	// The session: pi persists every run message as an entry, so later turns
+	// (and resumes) see what earlier turns inserted.
+	const entries: Array<Record<string, unknown>> = [];
+	const sessionManager = (sessionFile: string | null = null) => ({
+		getSessionFile: () => sessionFile,
+		getEntries: () => entries,
+		// No compaction or tree moves here: the context is every entry.
+		buildContextEntries: () => entries,
+	});
 
 	const pi = {
 		on: (name: string, fn: Handler) => {
@@ -377,14 +417,14 @@ function buildHarness(recallHits: SearchResult): Harness {
 	const ctxBase = () => ({
 		mode: "interactive",
 		cwd: scratch,
-		sessionManager: { getSessionFile: () => null },
+		sessionManager: sessionManager(),
 		// session_start captures ctx.ui.notify unconditionally (request-attention
 		// support) — no-op recording stub here; delivery is tested in attention.test.ts.
 		ui: { notify: () => {} },
 	});
 
 	const harness: Harness = {
-		lastSections: undefined,
+		entries,
 		state,
 		handlers,
 		wakeUpCalls,
@@ -412,35 +452,43 @@ function buildHarness(recallHits: SearchResult): Harness {
 					{
 						...ctxBase(),
 						mode,
-						sessionManager: { getSessionFile: () => sessionFile },
+						sessionManager: sessionManager(sessionFile),
 					},
 				);
 		},
 		driveTurn: async (
 			prompt = "please remember the palindrome drawer for this task",
-			opts: { noSections?: boolean } = {},
+			opts: { noBranch?: boolean } = {},
 		) => {
 			const fns = handlers.get("before_agent_start") ?? [];
 			assert.ok(fns.length > 0, "before_agent_start handler registered");
 			// pi rebuilds systemPromptOptions from base every turn, so custom
-			// sections start empty each time; old pi (< 0.86) sends none at all.
-			const sections: Record<string, string> | undefined = opts.noSections
-				? undefined
-				: {};
-			harness.lastSections = sections;
-			const event = opts.noSections
-				? { prompt, systemPrompt: "BASE SYSTEM PROMPT" }
-				: {
-						prompt,
-						systemPrompt: "BASE SYSTEM PROMPT",
-						systemPromptOptions: { sections },
-					};
-			let last: Record<string, unknown> | undefined;
+			// sections start empty each time.
+			const sections: Record<string, string> = {};
+			const event = {
+				prompt,
+				systemPrompt: "BASE SYSTEM PROMPT",
+				systemPromptOptions: { sections },
+			};
+			const ctx = opts.noBranch
+				? { ...ctxBase(), sessionManager: { getSessionFile: () => null } }
+				: ctxBase();
+			const result: TurnResult = {
+				messages: [],
+				systemPromptForced: false,
+				sections,
+			};
+			// pi collects one message per handler, in registration order.
 			for (const fn of fns) {
-				const r = await fn(event, ctxBase());
-				if (r && typeof r === "object") last = r as Record<string, unknown>;
+				const r = (await fn(event, ctx)) as
+					| { message?: TurnMessage; systemPrompt?: string }
+					| undefined;
+				if (r?.systemPrompt !== undefined) result.systemPromptForced = true;
+				if (r?.message) result.messages.push(r.message);
 			}
-			return last;
+			for (const m of result.messages)
+				entries.push({ type: "custom_message", ...m });
+			return result;
 		},
 		driveBeforeCompact: async (sessionFile: string | null) => {
 			const fns = handlers.get("session_before_compact") ?? [];
@@ -528,34 +576,34 @@ describe("session gating (AC-A5, A1 pins)", () => {
 		);
 	});
 
-	it("parent env: wakeUp.execute called exactly 1 time across session_start + 2 turns; wake-up lands in the mempalace section every turn", async () => {
+	it("parent env: wakeUp.execute called exactly 1 time across session_start + 2 turns; ONE wake-up message, no prompt section", async () => {
 		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
 		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
 
 		await h.driveSessionStart();
 		const r1 = await h.driveTurn();
-		assert.deepEqual(h.lastSections, { mempalace: "WAKE-UP-CONTENT" });
 		const r2 = await h.driveTurn();
-		assert.deepEqual(
-			h.lastSections,
-			{ mempalace: "WAKE-UP-CONTENT" },
-			"section re-set on the next turn (pi rebuilds options from base)",
-		);
 
+		assert.deepEqual(
+			wakeUpsOf(r1).map((m) => m.content),
+			[WAKE],
+			"first run inserts the wake-up message",
+		);
+		assert.equal(wakeUpsOf(r1)[0].display, true, "shown as a TUI badge");
+		assert.deepEqual(wakeUpsOf(r2), [], "persisted message is not re-inserted");
 		assert.equal(
 			h.wakeUpCalls.length,
 			1,
 			"parent fetches wake-up exactly once (session_start); self-heal must not re-fire",
 		);
-		assert.equal(h.state.wakeUpContext, "WAKE-UP-CONTENT");
-		for (const r of [r1, r2])
-			assert.ok(
-				!r || !("systemPrompt" in r),
-				"handler never forces a systemPrompt",
-			);
+		assert.equal(h.state.wakeUpContext, WAKE);
+		for (const r of [r1, r2]) {
+			assert.deepEqual(r.sections, {}, "no mempalace system-prompt section");
+			assert.equal(r.systemPromptForced, false, "never forces a systemPrompt");
+		}
 	});
 
-	it("short prompt ('yes'): mempalace section still set, recall skipped (no flap)", async () => {
+	it("short first prompt ('yes'): wake-up message still inserted, recall skipped", async () => {
 		const h = buildHarness({
 			snippets: ["memory snippet about palindromes"],
 			wing: null,
@@ -566,53 +614,41 @@ describe("session gating (AC-A5, A1 pins)", () => {
 		await h.driveSessionStart();
 		const r = await h.driveTurn("yes");
 
-		assert.deepEqual(h.lastSections, { mempalace: "WAKE-UP-CONTENT" });
+		assert.deepEqual(
+			r.messages.map((m) => m.customType),
+			[WAKEUP_CUSTOM_TYPE],
+			"wake-up only; short prompt skips recall",
+		);
 		assert.deepEqual(h.recallCalls, [], "short prompt skips recall");
-		assert.equal(r, undefined, "no recall message, no systemPrompt");
 	});
 
-	it("no wake-up context: sections left untouched (no empty mempalace section)", async () => {
+	it("gated child: no wake-up message, no section", async () => {
 		const h = buildHarness({ snippets: [], wing: null, palace: "/tmp/palace" });
 		h.setEnv({ PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" });
 
 		await h.driveSessionStart();
-		await h.driveTurn();
+		const r = await h.driveTurn();
 
-		assert.deepEqual(h.lastSections, {}, "gated child adds no section");
+		assert.deepEqual(r.messages, [], "gated child inserts nothing");
+		assert.deepEqual(r.sections, {}, "gated child adds no section");
 	});
 
-	it("old pi host (no systemPromptOptions.sections): skips injection, no throw, logs once; recall still works", async () => {
-		const errors: string[] = [];
-		const orig = console.error;
-		console.error = ((...args: unknown[]) => {
-			errors.push(args.map(String).join(" "));
-		}) as typeof console.error;
-		let r1: Record<string, unknown> | undefined;
-		let r2: Record<string, unknown> | undefined;
-		try {
-			const h = buildHarness({
-				snippets: ["memory snippet about palindromes"],
-				wing: null,
-				palace: "/tmp/palace",
-			});
-			h.setEnv({ PI_SUBAGENT_CHILD: undefined });
-			await h.driveSessionStart();
-			r1 = await h.driveTurn(undefined, { noSections: true });
-			r2 = await h.driveTurn("yes", { noSections: true });
-		} finally {
-			console.error = orig;
+	it("host without a readable session context: no wake-up message (cannot tell), no throw; recall still works", async () => {
+		const h = buildHarness({
+			snippets: ["memory snippet about palindromes"],
+			wing: null,
+			palace: "/tmp/palace",
+		});
+		h.setEnv({ PI_SUBAGENT_CHILD: undefined });
+		await h.driveSessionStart();
+		const r1 = await h.driveTurn(undefined, { noBranch: true });
+		const r2 = await h.driveTurn(undefined, { noBranch: true });
+
+		for (const r of [r1, r2]) {
+			assert.deepEqual(wakeUpsOf(r), [], "inserting blind would repeat every turn");
+			assert.equal(recallOf(r)?.customType, RECALL_CUSTOM_TYPE);
+			assert.equal(r.systemPromptForced, false, "no legacy systemPrompt fallback");
 		}
-		assert.ok(r1, "recall still returns a message");
-		assert.ok(!("systemPrompt" in r1), "no legacy systemPrompt fallback");
-		assert.equal(
-			(r1.message as { customType: string }).customType,
-			RECALL_CUSTOM_TYPE,
-		);
-		assert.equal(r2, undefined, "short turn on old pi returns nothing");
-		const lines = errors.filter((l) =>
-			l.includes("no systemPromptOptions.sections"),
-		);
-		assert.equal(lines.length, 1, "exactly one no-sections log line");
 	});
 
 	it("parent print mode: session_start skips, self-heal fetches once (parent print path unchanged)", async () => {
@@ -629,12 +665,19 @@ describe("session gating (AC-A5, A1 pins)", () => {
 			h.state.config,
 			"print-mode start still pre-warms the palace config",
 		);
-		await h.driveTurn();
+		const r1 = await h.driveTurn();
+		const r2 = await h.driveTurn();
 		assert.equal(
 			h.wakeUpCalls.length,
 			1,
 			"self-heal still fetches once for a print-mode parent",
 		);
+		assert.deepEqual(
+			wakeUpsOf(r1).map((m) => m.content),
+			[WAKE],
+			"self-heal inserts the message",
+		);
+		assert.deepEqual(wakeUpsOf(r2), [], "and only once");
 	});
 
 	it("child print mode: BOTH session_start and the self-heal path stay silent (the print-child leak)", async () => {
@@ -660,10 +703,11 @@ describe("session gating (AC-A5, A1 pins)", () => {
 		});
 
 		await h.driveSessionStart();
-		await h.driveTurn();
+		const r = await h.driveTurn();
 
 		assert.equal(h.wakeUpCalls.length, 1);
-		assert.equal(h.state.wakeUpContext, "WAKE-UP-CONTENT");
+		assert.equal(h.state.wakeUpContext, WAKE);
+		assert.equal(wakeUpsOf(r).length, 1, "hatch child gets the message");
 	});
 });
 
@@ -679,8 +723,8 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 		await h.driveSessionStart();
 		const r = await h.driveTurn();
 
-		assert.equal(r, undefined, "gated child with no wake-up returns nothing");
-		assert.deepEqual(h.lastSections, {}, "gated child sets no section");
+		assert.deepEqual(r.messages, [], "gated child with no wake-up returns nothing");
+		assert.deepEqual(r.sections, {}, "gated child sets no section");
 		assert.deepEqual(
 			h.recallCalls,
 			[],
@@ -700,18 +744,16 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 		await h.driveSessionStart();
 		const r = await h.driveTurn();
 
-		assert.ok(r, "handler returned a result");
-		assert.ok(!("systemPrompt" in r), "no forced systemPrompt");
-		assert.deepEqual(h.lastSections, {}, "opted-in child still has no wake-up");
-		const message = r.message as
-			| { customType: string; content: string }
-			| undefined;
+		assert.equal(r.systemPromptForced, false, "no forced systemPrompt");
+		assert.deepEqual(wakeUpsOf(r), [], "opted-in child still has no wake-up");
+		assert.deepEqual(r.sections, {}, "and no section");
+		const message = recallOf(r);
 		assert.ok(message, "recall message present");
 		assert.equal(message.customType, RECALL_CUSTOM_TYPE);
 		assert.ok(message.content.includes("palindrome"), "recall content carried");
 	});
 
-	it("parent env with the same recall hit: message AND mempalace section (parent behavior preserved)", async () => {
+	it("parent env with the same recall hit: wake-up message THEN recall message, no section", async () => {
 		const h = buildHarness({
 			snippets: ["memory snippet about palindromes"],
 			wing: null,
@@ -722,17 +764,13 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 		await h.driveSessionStart();
 		const r = await h.driveTurn();
 
-		assert.ok(r && typeof r === "object");
-		assert.equal(
-			(r.message as { customType: string }).customType,
-			RECALL_CUSTOM_TYPE,
-		);
-		assert.ok(!("systemPrompt" in r), "no forced systemPrompt");
 		assert.deepEqual(
-			h.lastSections,
-			{ mempalace: "WAKE-UP-CONTENT" },
-			"parent keeps the wake-up section alongside recall",
+			r.messages.map((m) => m.customType),
+			[WAKEUP_CUSTOM_TYPE, RECALL_CUSTOM_TYPE],
+			"wake-up precedes recall (hook registration order)",
 		);
+		assert.equal(r.systemPromptForced, false, "no forced systemPrompt");
+		assert.deepEqual(r.sections, {}, "no mempalace section");
 	});
 
 	it("master off (recall_on_prompt=false): no recall anywhere, wake-up leg intact", async () => {
@@ -749,11 +787,10 @@ describe("recall gating (settings-driven; reworks the AC-A2 child-recall contrac
 
 		assert.deepEqual(h.recallCalls, [], "master off must skip recall.execute");
 		assert.deepEqual(
-			h.lastSections,
-			{ mempalace: "WAKE-UP-CONTENT" },
-			"wake-up injection must survive the recall gate",
+			r.messages.map((m) => m.customType),
+			[WAKEUP_CUSTOM_TYPE],
+			"wake-up message survives the recall gate; no recall message",
 		);
-		assert.equal(r, undefined, "no recall snippet under master off");
 	});
 });
 

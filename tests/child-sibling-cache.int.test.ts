@@ -11,14 +11,13 @@
  *
  * Coverage:
  *  - AC-A1: two real sibling children → identical system-prompt hashes, no
- *    [MemPalace Session Context], tasks differ.
- *  - AC-A4: child + PI_MEMPALACE_CHILD_WAKEUP=1 → marker present (also the
- *    non-vacuity control); + csv scoping vs PI_SUBAGENT_CHILD_AGENT → absent.
- *  - AC-A3: parent (no child env) prompt hash identical pre/post change.
- *    The pre-change tree is PI_MEMPALACE_PRE_CHANGE_DIR when set; otherwise
- *    it is materialised with `git archive` from PI_MEMPALACE_PRE_CHANGE_REF
- *    (default: the merge-base of HEAD with origin/main), so a branch must
- *    not change the parent's system prompt.
+ *    wake-up (no prompt marker, no wake-up message), tasks differ.
+ *  - AC-A4: child + PI_MEMPALACE_CHILD_WAKEUP=1 → one wake-up message (also
+ *    the non-vacuity control); + csv scoping vs PI_SUBAGENT_CHILD_AGENT →
+ *    absent. Never a system-prompt marker.
+ *  - AC-A3: parent (no child env) → exactly one wake-up message in its
+ *    context and a system prompt byte-identical to a gated child's (the
+ *    wake-up left the system prompt, 2026-11-07).
  *  - AC-A6: fork-style children stable across curation-style spawns, plus
  *    the PI_SUBAGENT_CHILD upstream-contract pin against the installed
  *    pi-subagents package (PI_SUBAGENTS_PKG_DIR, else the profile's and the
@@ -39,9 +38,9 @@
  * close; the session_start body surface is unit-pinned in child-gate.test.ts.
  */
 
-import { spawn, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { accessSync, constants, existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,7 +50,6 @@ import assert from "node:assert/strict";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // This file lives at <repo>/tests/ — ONE level up is the repo root.
 const REPO_ROOT = join(__dirname, "..");
-const PRE_CHANGE_DIR_ENV = process.env.PI_MEMPALACE_PRE_CHANGE_DIR;
 
 /** First existing pi-subagents package dir: the env override (only it when
  *  set), else the profile git install, the shared git install, then npm. */
@@ -91,6 +89,11 @@ interface ProbeLine {
 	length: number;
 	mempalaceMarker: boolean;
 	task: string;
+	/** Most `mempalace-wakeup` messages seen in any `context` call of the
+	 *  spawn (context.jsonl); -1 when `context` never fired. Set by spawnPi. */
+	wakeUpMessages: number;
+	/** sha256 of the wake-up message contents in that same context call. */
+	wakeUpSha256: string | null;
 }
 
 // Dummy provider: connection-refused at 127.0.0.1:1 — pi starts, fires
@@ -135,14 +138,22 @@ const SETTINGS_JSON = JSON.stringify(
 /** Stub `mempalace` CLI, first on every spawn's PATH. The real CLI reads
  *  ~/.mempalace/config.json, which may point at a live shared store (qdrant)
  *  whatever `--palace` says, so the parent wake-up text would change as other
- *  sessions write and AC-A3's pre/post hashes would drift between spawns
+ *  sessions write and spawn-to-spawn comparisons would drift
  *  (seen unsandboxed, W3). The stub prints a fixed wake-up text, so the hash
  *  measures only the extension; every other subcommand (mine, sync, ...) is a
- *  silent no-op, so spawns never write to a real palace. */
+ *  silent no-op, so spawns never write to a real palace. Two opt-in knobs
+ *  for the resume test: STUB_WAKEUP_LOG appends one line per wake-up call,
+ *  and STUB_WAKEUP_DRIFT makes every fetch return different text — the L1
+ *  drift a mid-session diary write causes. */
 const STUB_MEMPALACE = `#!/bin/sh
 for a in "$@"; do
 	if [ "$a" = "wake-up" ]; then
-		echo "Stub wake-up for the pi-mempalace int test."
+		[ -n "$STUB_WAKEUP_LOG" ] && echo wake-up >> "$STUB_WAKEUP_LOG"
+		if [ -n "$STUB_WAKEUP_DRIFT" ]; then
+			echo "Stub wake-up fetched at $(date +%s)-$$."
+		else
+			echo "Stub wake-up for the pi-mempalace int test."
+		fi
 		exit 0
 	fi
 done
@@ -159,10 +170,6 @@ const PACKAGE_JSON = JSON.stringify(
 	null,
 	"\t",
 );
-
-function pathExists(p: string): boolean {
-	return existsSync(p);
-}
 
 function isExecutable(p: string): boolean {
 	try {
@@ -193,34 +200,6 @@ const PI_SKIP = piBin === null
 	? "pi binary not found on PATH outside node_modules/.bin (set PI_MEMPALACE_INT_PI_BIN)"
 	: undefined;
 
-/** Pre-change tree for AC-A3: the env dir, else `git archive` of the ref
- *  extracted into `dest`. Returns the dir, or the skip reason. */
-function materialisePreChange(dest: string): { dir: string } | { skip: string } {
-	if (PRE_CHANGE_DIR_ENV) {
-		return existsSync(PRE_CHANGE_DIR_ENV)
-			? { dir: PRE_CHANGE_DIR_ENV }
-			: { skip: `pre-change dir not found at ${PRE_CHANGE_DIR_ENV} (PI_MEMPALACE_PRE_CHANGE_DIR)` };
-	}
-	const git = (...args: string[]) =>
-		execFileSync("git", ["-C", REPO_ROOT, ...args], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		}).trim();
-	let ref = process.env.PI_MEMPALACE_PRE_CHANGE_REF ?? "";
-	try {
-		if (!ref) ref = git("merge-base", "HEAD", "origin/main");
-		const tar = `${dest}.tar`;
-		git("archive", "--format=tar", "-o", tar, ref);
-		mkdirSync(dest, { recursive: true });
-		execFileSync("tar", ["-xf", tar, "-C", dest]);
-		return { dir: dest };
-	} catch {
-		return {
-			skip: `could not materialise the pre-change tree from ${ref || "merge-base HEAD origin/main"} (set PI_MEMPALACE_PRE_CHANGE_DIR or PI_MEMPALACE_PRE_CHANGE_REF)`,
-		};
-	}
-}
-
 /** Scratch agent dir: provider + session storage only. No extensions/
  *  manifest — extension loading happens via explicit --extension flags. */
 async function buildScratchAgent(root: string): Promise<string> {
@@ -239,8 +218,6 @@ let workDir = "";
 let palaceDir = "";
 let stubBinDir = "";
 let agentDir = "";
-let linkedPreNodeModules = "";
-let preChange: { dir: string } | { skip: string } = { skip: "pre-change tree not prepared (pi binary missing)" };
 
 async function runOnce(args: string[], env: NodeJS.ProcessEnv): Promise<string> {
 	let stderr = "";
@@ -277,10 +254,12 @@ async function runOnce(args: string[], env: NodeJS.ProcessEnv): Promise<string> 
 
 async function spawnPi(opts: {
 	task: string;
-	/** Extension root whose index.ts is loaded (working tree or pre-change worktree). */
+	/** Extension root whose index.ts is loaded. */
 	extRoot: string;
 	label: string;
 	env?: Record<string, string | undefined>;
+	/** Extra pi flags placed before the task (e.g. --session-dir, --continue). */
+	extraArgs?: string[];
 }): Promise<ProbeLine[]> {
 	const probeDir = join(runRoot, "probe", opts.label);
 	await mkdir(probeDir, { recursive: true });
@@ -312,6 +291,7 @@ async function spawnPi(opts: {
 		"--extension", join(REPO_ROOT, "tests", "helpers", "prompt-probe", "index.ts"),
 		"--no-skills",
 		"--no-context-files",
+		...(opts.extraArgs ?? []),
 		opts.task,
 	];
 
@@ -351,6 +331,21 @@ async function spawnPi(opts: {
 		.filter(Boolean)
 		.map((l) => JSON.parse(l) as ProbeLine);
 	assert.ok(lines.length >= 1, `probe must fire at least once for ${opts.label}`);
+	// The wake-up rides the conversation, so the context probe carries it.
+	const contextRaw = await readFile(join(probeDir, "context.jsonl"), "utf8").catch(() => "");
+	const records = contextRaw
+		.trim()
+		.split("\n")
+		.filter(Boolean)
+		.map((l) => JSON.parse(l) as { wakeUpMessages: number; wakeUpSha256: string });
+	const top = records.reduce<(typeof records)[number] | null>(
+		(best, r) => (best === null || r.wakeUpMessages > best.wakeUpMessages ? r : best),
+		null,
+	);
+	for (const line of lines) {
+		line.wakeUpMessages = top?.wakeUpMessages ?? -1;
+		line.wakeUpSha256 = top?.wakeUpSha256 ?? null;
+	}
 	return lines;
 }
 
@@ -368,21 +363,9 @@ before(async () => {
 	stubBinDir = join(runRoot, "bin");
 	await mkdir(stubBinDir, { recursive: true });
 	await writeFile(join(stubBinDir, "mempalace"), STUB_MEMPALACE, { mode: 0o755 });
-
-	preChange = materialisePreChange(join(runRoot, "pre-change"));
-	if ("dir" in preChange) {
-		// The tree has no node_modules (gitignored); borrow the repo's: the
-		// parent prompt depends on the extension source, not on dev deps.
-		const nm = join(preChange.dir, "node_modules");
-		if (!pathExists(nm)) {
-			await symlink(join(REPO_ROOT, "node_modules"), nm, "dir");
-			linkedPreNodeModules = nm;
-		}
-	}
 });
 
 after(async () => {
-	if (linkedPreNodeModules) await rm(linkedPreNodeModules, { force: true }).catch(() => {});
 	if (runRoot) await rm(runRoot, { recursive: true, force: true }).catch(() => {});
 });
 
@@ -404,6 +387,8 @@ describe("AC-A1 sibling children: identical prompts, no wake-up block", () => {
 
 		assert.equal(a.mempalaceMarker, false, "child A must not carry the wake-up block");
 		assert.equal(b.mempalaceMarker, false, "child B must not carry the wake-up block");
+		assert.equal(a.wakeUpMessages, 0, "child A context carries no wake-up message");
+		assert.equal(b.wakeUpMessages, 0, "child B context carries no wake-up message");
 		assert.equal(a.sha256, b.sha256, "sibling children must hash identically (no per-child prompt variance)");
 		assert.ok(a.length > 0 && a.length === b.length, "non-empty prompts of equal length");
 		assert.notEqual(a.task, b.task, "sibling task texts differ by construction");
@@ -418,7 +403,8 @@ describe("AC-A4 escape hatch", () => {
 			label: "hatch-fleet",
 			env: { PI_SUBAGENT_CHILD: "1", PI_MEMPALACE_CHILD_WAKEUP: "1" },
 		});
-		assert.equal(h.mempalaceMarker, true, "fleet hatch re-enables the wake-up block");
+		assert.equal(h.wakeUpMessages, 1, "fleet hatch re-enables the wake-up message");
+		assert.equal(h.mempalaceMarker, false, "never as a system-prompt section");
 	});
 
 	it("child + WAKEUP=1 + AGENTS=scout with PI_SUBAGENT_CHILD_AGENT=worker → block ABSENT", { timeout: 180_000, skip: PI_SKIP }, async () => {
@@ -433,7 +419,8 @@ describe("AC-A4 escape hatch", () => {
 				PI_MEMPALACE_CHILD_WAKEUP_AGENTS: "scout",
 			},
 		});
-		assert.equal(s.mempalaceMarker, false, "csv-scoped hatch must stay off for out-of-scope agents");
+		assert.equal(s.wakeUpMessages, 0, "csv-scoped hatch must stay off for out-of-scope agents");
+		assert.equal(s.mempalaceMarker, false);
 	});
 
 	it("child + WAKEUP=1 + AGENTS listing the agent → block PRESENT", { timeout: 180_000, skip: PI_SKIP }, async () => {
@@ -448,26 +435,75 @@ describe("AC-A4 escape hatch", () => {
 				PI_MEMPALACE_CHILD_WAKEUP_AGENTS: "scout, worker",
 			},
 		});
-		assert.equal(m.mempalaceMarker, true, "csv-scoped hatch opens for the listed agent");
+		assert.equal(m.wakeUpMessages, 1, "csv-scoped hatch opens for the listed agent");
+		assert.equal(m.mempalaceMarker, false, "never as a system-prompt section");
 	});
 });
 
-describe("AC-A3 parent invariance: prompt hash unchanged pre/post change", () => {
-	it("parent spawn hashes identically against the pre-change worktree", {
+describe("AC-A3 parent: wake-up as one conversation message, system prompt untouched", () => {
+	// Reworked 2026-11-07: the wake-up left the system prompt, so the old
+	// pre/post-change hash comparison no longer holds by design. The parent's
+	// system prompt must now be byte-identical to a gated child's — the
+	// extension contributes nothing to it — while its context carries exactly
+	// one wake-up message.
+	it("parent context has one wake-up message; its system prompt hashes like a gated child's", {
 		timeout: 180_000,
 		skip: PI_SKIP,
-	}, async (t) => {
-		if ("skip" in preChange) {
-			t.skip(preChange.skip);
-			return;
-		}
+	}, async () => {
 		const task = "parent invariance task: compare my system prompt hash";
-		const post = (await spawnPi({ task, extRoot: REPO_ROOT, label: "parent-post" }))[0];
-		const pre = (await spawnPi({ task, extRoot: preChange.dir, label: "parent-pre" }))[0];
+		const parent = (await spawnPi({ task, extRoot: REPO_ROOT, label: "parent" }))[0];
+		const child = (await spawnPi({
+			task,
+			extRoot: REPO_ROOT,
+			label: "parent-control-child",
+			env: { PI_SUBAGENT_CHILD: "1", PI_SUBAGENT_CHILD_AGENT: "worker" },
+		}))[0];
 
-		assert.equal(post.mempalaceMarker, true, "post-change parent keeps the wake-up block");
-		assert.equal(pre.mempalaceMarker, true, "pre-change parent keeps the wake-up block");
-		assert.equal(post.sha256, pre.sha256, "parent prompt hash must be byte-identical pre/post change (G3)");
+		assert.equal(parent.wakeUpMessages, 1, "parent gets exactly one wake-up message");
+		assert.equal(parent.mempalaceMarker, false, "no mempalace system-prompt section");
+		assert.equal(child.wakeUpMessages, 0, "control child gets none");
+		assert.equal(
+			parent.sha256,
+			child.sha256,
+			"parent system prompt byte-identical to the gated child's (no mempalace contribution)",
+		);
+	});
+});
+
+describe("incident regression: restart + --continue reuses the saved wake-up", () => {
+	// The 2026-11-07 incident: each restart re-fetched a drifted wake-up and
+	// changed the system prompt. Real pi, two processes, one session.
+	it("second process (--continue) makes no wake-up call, replays the same message, same system prompt", {
+		timeout: 180_000,
+		skip: PI_SKIP,
+	}, async () => {
+		const sessionDir = join(runRoot, "resume-sessions");
+		const log = join(runRoot, "resume-wakeup-calls.log");
+		await mkdir(sessionDir, { recursive: true });
+		const env = { STUB_WAKEUP_LOG: log, STUB_WAKEUP_DRIFT: "1" };
+		const first = (await spawnPi({
+			task: "resume task one: start a new session",
+			extRoot: REPO_ROOT,
+			label: "resume-1",
+			env,
+			extraArgs: ["--session-dir", sessionDir],
+		}))[0];
+		const second = (await spawnPi({
+			task: "resume task two: continue the same session",
+			extRoot: REPO_ROOT,
+			label: "resume-2",
+			env,
+			extraArgs: ["--session-dir", sessionDir, "--continue"],
+		}))[0];
+		const calls = (await readFile(log, "utf8").catch(() => ""))
+			.split("\n")
+			.filter(Boolean).length;
+
+		assert.equal(calls, 1, "wake-up fetched once across both processes");
+		assert.equal(first.wakeUpMessages, 1);
+		assert.equal(second.wakeUpMessages, 1, "the saved message replays; no second copy");
+		assert.equal(second.wakeUpSha256, first.wakeUpSha256, "replayed byte-identically");
+		assert.equal(second.sha256, first.sha256, "system prompt byte-identical across the restart");
 	});
 });
 

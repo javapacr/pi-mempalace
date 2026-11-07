@@ -11,7 +11,7 @@ The extension follows a Domain-Driven Design (DDD) structure:
 ```
 index.ts                          # Entry — wires up use cases + event registration
 ├── application/                  # Use cases (orchestration layer)
-│   ├── wake-up.usecase.ts        # Loads L0+L1 wake-up context (injected as the `mempalace` prompt section)
+│   ├── wake-up.usecase.ts        # Loads L0+L1 wake-up context (sent once as a `mempalace-wakeup` conversation message)
 │   ├── recall.usecase.ts         # Per-prompt memory recall + injection
 │   ├── curation.usecase.ts       # Automated diary/drawer/KG curation via subagents
 │   ├── mining.usecase.ts         # Session transcript mining before compaction
@@ -20,6 +20,8 @@ index.ts                          # Entry — wires up use cases + event registr
 │   ├── types.ts                  # Core types (SessionState, MempalaceConfig, etc.)
 │   ├── palace-router.ts          # Reads mempalace.yaml → palace/wing resolution
 │   ├── recall-parser.ts          # Parses search snippets into recall context
+│   ├── wake-up-message.ts        # Wake-up message framing + saved-text / needs-insert rules over session entries (pure)
+│   ├── pi-transcript.ts          # Would MemPalace parse this pi transcript, or raw-ingest it? (pure)
 │   ├── diary-nudge.ts            # Settle/handoff nudge gates, diary-tool suffix match, nudge texts (pure)
 │   ├── handoff-contract.ts       # pi-handoff event contract: channels, payload shapes, runtime parser (mirrored)
 │   ├── curation-prompt.ts        # Builds curation subagent prompts
@@ -27,9 +29,10 @@ index.ts                          # Entry — wires up use cases + event registr
 ├── infrastructure/               # External integrations
 │   ├── mempalace-cli.ts          # Wraps the `mempalace` CLI commands
 │   ├── skill-installer.ts        # Filesystem operations for skill install/update
+│   ├── transcript-probe.ts       # Bounded sync read feeding the pi-transcript minability rule
 │   └── event-registration.ts     # Registers lifecycle hooks with pi
 ├── ui/
-│   └── recall-renderer.ts        # Custom TUI rendering for recall results
+│   └── recall-renderer.ts        # TUI badges for the recall and wake-up messages
 ├── tools/                        # Dormant maintenance tools (NOT registered)
 │   ├── delete-wing.tool.ts       # Delete all drawers in a wing (dry-run capable)
 │   ├── repair-fts5.tool.ts       # Rebuild ChromaDB FTS5 full-text index
@@ -45,8 +48,8 @@ index.ts                          # Entry — wires up use cases + event registr
 
 | Event                         | Description                                                                                                                                                                                                                                 |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session_start`               | Load wake-up context (L0+L1 ~940 tokens); reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies                                         |
-| `before_agent_start`          | Set the wake-up context as the `mempalace` system-prompt section (`systemPromptOptions.sections.mempalace`, rendered `<mempalace>…</mempalace>`) on **every** turn, short prompts included — never a forced `systemPrompt`, so pi keeps transcript deltas. Needs pi ≥ 0.86; older hosts skip wake-up injection with a one-time stderr log. Then recall per-prompt memories (prompts ≥ 10 chars) as a custom message; gated by settings (`recall_on_prompt` master switch; subagent children also need `children.recall`, default off) — the wake-up self-heal retry stays child-gated by the env hatch |
+| `session_start`               | New session: fetch the wake-up context (L0+L1 ~940 tokens). Resume / restart / reload / fork: reuse the text of the `mempalace-wakeup` message already saved in the session entries — no CLI call. Two cases fetch fresh because no saved message exists: a fork from before the first prompt, and the first resume of a session from before this change (that resume also takes one cache miss, as the old `mempalace` system-prompt section is removed). Reset conversation counter; skipped for subagent children (`PI_SUBAGENT_CHILD=1`) unless the `PI_MEMPALACE_CHILD_WAKEUP` hatch applies |
+| `before_agent_start`          | Wake-up hook first: when the model context (pi's compaction-aware `buildContextEntries()`) holds no wake-up message, return the wake-up text as ONE persisted `mempalace-wakeup` custom message (`display:true`, one-line TUI badge). That is the first run of a new session, and the first run after a compaction summarised the wake-up away or a `/tree` move went back before it — those re-insert the SAME saved text, never a re-fetch; a wake-up kept in a compaction's tail is not duplicated. pi compacts before emitting this hook, so no `session_compact` handler or process flag is needed. It is never a system-prompt section, so the system prompt stays byte-identical for the whole session and a resume keeps the prompt-cache prefix and every earlier thinking block. A one-shot self-heal fetch covers a failed or skipped (print mode) `session_start` fetch, child-gated by the env hatch. Then the recall hook: per-prompt memories (prompts ≥ 10 chars) as a custom message whose content is a pure function of the snippets, so it replays identically; gated by settings (`recall_on_prompt` master switch; subagent children also need `children.recall`, default off) |
 | `agent_end`                   | Every `save_interval` exchanges (default 15), inject an in-session curation checkpoint that files key items via the MemPalace MCP tools; runs triggered by the diary nudge are excluded from the count and skip the checkpoint; subagent children skip it unless `children.curation` is set (default off)                          |
 | `agent_settled`               | After every settled run in interactive TUI mode once at least `mempalace.diary_settle_min_tool_calls` tool calls have accumulated since the last diary write or diary nudge (the activity threshold, default 3; 0 = every settle — short runs add up across settles that did not nudge), send one hidden diary nudge (`display:false`, `triggerTurn:true`, followUp): write one MemPalace diary entry if anything durable happened, else reply one short line and start no new work. Skips: the nudge's own run, aborted settles, subagent children, non-TUI modes (print/json/rpc), a handoff in progress, runs that already called the diary tool, runs whose `agent_end` just queued the curation checkpoint (its prompt already asks for a diary write, and on pi ≥ 1.2 a nudge run would carry that pending checkpoint into itself), and sessions with no tool ending in `mempalace_diary_write` registered — the diary-write tool must be registered directly (not reachable only through an MCP gateway). Known limitation: a diary write routed through the `mcp` gateway tool is not detected, so that run still gets a redundant nudge ([backlog 007](docs/backlog/007-mcp-gateway-diary-detection.md)). Off switch: `mempalace.diary_on_settle` |
 | `tool_execution_start` / `input` | Count tool calls toward the activity threshold, and mark the run as already-diarised when a tool name ends in `mempalace_diary_write` (that call also starts the count over, as do a sent settle or handoff nudge, a nudge run's settle and a settle that queued the curation checkpoint); the user's next interactive `input` closes the handoff-in-progress window below (nudge runs never fire `input`) |
@@ -54,7 +57,7 @@ index.ts                          # Entry — wires up use cases + event registr
 | pi.events `handoff_command_start` | pi-handoff's `/handoff`, after its has-conversation gate: raise the handoff-in-progress window and send one hidden handoff nudge — only for `trigger:"handoff"` with a function `waitUntil`, which receives a promise resolving on the next `agent_settled` (aborted or not), registered synchronously before the listener returns and released after 125s at the latest (the wait self-bound). When a curation checkpoint is still queued, the nudge uses a checkpoint-variant text: finish the checkpoint concisely (it includes the diary write), then stop. **Cost gate:** the nudge is one in-session model turn, so it is skipped — window still raised, no wait registered, nothing sent — when the prompt cache is cold (the last clean assistant message started longer ago than `mempalace.diary_on_handoff_max_idle_ms`, default 4.5 min, or 55 min under `PI_CACHE_RETENTION=long`; no assistant message yet counts as cold), because a cold turn rewrites the whole context into the cache for a diary entry pi-handoff's `skipTools` strips from the snapshot anyway; and when nothing is new to diarise (no tool calls since the last diary write or nudge, unless a curation checkpoint is still queued). An unrecognised payload (missing/unknown trigger, or `trigger:"handoff"` without `waitUntil`) shows one drift warning per session. A bare `/continue` (`trigger:"continue"`), a missing/unknown trigger, or a missing `waitUntil` sends nothing (a missing `waitUntil` still raises the window). Same gates as the tool path below. Off switch: `mempalace.diary_on_handoff` |
 | pi.events `handoff_tool_start` / `tui_filled_handoff` / `handoff_command_complete` | pi-handoff's continue path: `handoff_tool_start` opens the handoff-in-progress window (which keeps the settle nudge quiet until the handoff resolves) and sends one hidden handoff nudge, deduped per session — no cost gate, since it fires mid-run on a warm cache; `tui_filled_handoff` (the installed continue tool's legacy signal) only opens the window; `handoff_command_complete` closes it |
 | `session_before_compact`      | Mine the session transcript before summarisation                                                                                                                                                                                            |
-| `session_shutdown`            | Background mine of the session transcript file on quit and session replacement (new/resume/fork; not reload)                                                                                                                                |
+| `session_shutdown`            | Background mine of the session transcript file on quit and session replacement (new/resume/fork; not reload). Both mine paths skip a transcript with fewer than two user/assistant text messages: MemPalace (3.11.0) ingests such a file as raw JSON, pi's system prompt and tool JSON schemas included ([backlog 012](docs/backlog/012-core-pi-jsonl-raw-fallback.md)) |
 | pi.events `request-attention` | Listen for pi-claude-sandbox's sandbox-permission signal and surface it as a transient `ctx.ui.notify` toast (warning); no clear event exists — toast self-clears; payload stays in-process                                                 |
 
 ### pi-handoff event contract
@@ -182,8 +185,9 @@ bun build index.ts --no-bundle
 ## Child gate & escape hatch
 
 Subagent children (`PI_SUBAGENT_CHILD=1`, fresh and fork) skip the wake-up
-fetch (so no `mempalace` prompt section) and `syncSkills` at `session_start` — and the
-`before_agent_start` self-heal retry — plus, by default, per-prompt recall
+fetch and message (a fork child still replays any wake-up message in the
+history it inherits) and `syncSkills` at `session_start` — and the
+`before_agent_start` self-heal retry and the post-compaction re-insert — plus, by default, per-prompt recall
 and the `agent_end` curation checkpoint. Recall/curation for children are
 settings-driven (see [Settings](#settings)): `mempalace.children.recall` and
 `mempalace.children.curation` default to `false` (primary-only), and the
@@ -257,10 +261,12 @@ spawns the installed `pi` (`PI_MEMPALACE_INT_PI_BIN`, else the first on
 `PATH` outside any `node_modules/.bin`, else `~/.npm-global/bin/pi`) with every
 host `PI_*`, `JITI_*` and `MEMPALACE_*` variable dropped and a stub `mempalace`
 CLI first on `PATH`, so wake-up text never comes from a live palace and spawns
-never write to one. Its parent-invariance check compares against a
-pre-change tree: `PI_MEMPALACE_PRE_CHANGE_DIR`, else a `git archive` of
-`PI_MEMPALACE_PRE_CHANGE_REF` (default: the merge-base of `HEAD` with
-`origin/main`). Its pi-subagents pin reads `PI_SUBAGENTS_PKG_DIR`, else the
+never write to one. A probe extension records each spawn's system-prompt
+hash and the `mempalace-wakeup` messages in its `context`; the parent check
+asserts one wake-up message and a system prompt byte-identical to a gated
+child's, and the incident regression runs a second process with
+`--continue` against a drifting stub: no second fetch, the same wake-up
+message and the same system prompt. Its pi-subagents pin reads `PI_SUBAGENTS_PKG_DIR`, else the
 profile's and the shared git install, else the npm install. The contract
 drift test takes `PI_HANDOFF_DIR` and `PI_HANDOFF_REF` (see the pi-handoff
 contract above).

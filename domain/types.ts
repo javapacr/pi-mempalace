@@ -100,6 +100,12 @@ export interface SearchResult {
  * Instantiated once in index.ts and injected into all handlers.
  */
 export class SessionState {
+	/**
+	 * This session's wake-up text: the text saved in the session entries on a
+	 * resume, else the text fetched at session_start (or by the one-shot
+	 * self-heal). Only ever sent as a `mempalace-wakeup` conversation message —
+	 * never as a system-prompt section.
+	 */
 	wakeUpContext: string | null = null;
 	wakeUpRetried = false;
 	conversationCount = 0;
@@ -115,8 +121,6 @@ export class SessionState {
 	/** One-shot child-gate log flags (PRD §4 A3/A6) — one line per session. */
 	gateSkipLogged = false;
 	hatchLogged = false;
-	/** One-shot log flag: host lacks prompt sections (pi < 0.86). */
-	noSectionsLogged = false;
 	/**
 	 * Settings parsed ONCE at session_start, BEFORE the print-mode and
 	 * child-gate returns — children and print one-shots gate recall/curation
@@ -189,7 +193,6 @@ export class SessionState {
 		this.sessionFile = null;
 		this.gateSkipLogged = false;
 		this.hatchLogged = false;
-		this.noSectionsLogged = false;
 		this.settings = null;
 		this.nudgeRunPending = false;
 		this.diaryWrittenThisRun = false;

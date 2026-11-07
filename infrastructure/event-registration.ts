@@ -40,6 +40,13 @@ import {
 	parseHandoffCommandStart,
 } from "../domain/handoff-contract";
 import { formatRecallContext } from "../domain/recall-parser";
+import {
+	WAKEUP_CUSTOM_TYPE,
+	contextNeedsWakeUp,
+	findSavedWakeUp,
+	formatWakeUpMessage,
+	type EntryLike,
+} from "../domain/wake-up-message";
 import type { WakeUpUseCase } from "../application/wake-up.usecase";
 import type { RecallUseCase } from "../application/recall.usecase";
 import type { CurationUseCase } from "../application/curation.usecase";
@@ -76,18 +83,60 @@ function logHatchOnce(state: SessionState, reason: string): void {
 	);
 }
 
-// pi < 0.86 has no structured prompt sections — wake-up injection is skipped
-// there (user decision D2: no forced-systemPrompt fallback). One line per session.
-function logNoSectionsOnce(state: SessionState): void {
-	if (state.noSectionsLogged) return;
-	state.noSectionsLogged = true;
-	console.error(
-		"MemPalace: host pi has no systemPromptOptions.sections (pi < 0.86) — wake-up context not injected; recall unaffected",
-	);
+// ── Session-entry reads for the wake-up message ──────────────────────────────────────
+// Structural, never-throwing reads: the handler ctx types promise a full
+// session manager, but a host or harness without one must degrade to "no
+// entries" instead of throwing from a hook. `null` = the context is
+// unreadable, which the wake-up leg treats as "cannot tell" and skips —
+// inserting blind would re-insert on every turn.
+type SessionManagerLike = {
+	getEntries?: () => readonly EntryLike[];
+	buildContextEntries?: () => readonly EntryLike[];
+};
+
+function sessionManagerOf(ctx: unknown): SessionManagerLike | undefined {
+	return (ctx as { sessionManager?: SessionManagerLike } | undefined)
+		?.sessionManager;
 }
 
-/** Prompt section name for the wake-up context; pi renders it as `<mempalace>…</mempalace>`. */
-export const WAKEUP_SECTION = "mempalace";
+function readEntries(ctx: unknown): readonly EntryLike[] {
+	try {
+		const sm = sessionManagerOf(ctx);
+		return typeof sm?.getEntries === "function" ? sm.getEntries() : [];
+	} catch {
+		return [];
+	}
+}
+
+/** The entries that make up the model context (compaction-aware, current leaf). */
+function readContextEntries(ctx: unknown): readonly EntryLike[] | null {
+	try {
+		const sm = sessionManagerOf(ctx);
+		return typeof sm?.buildContextEntries === "function"
+			? sm.buildContextEntries()
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/** The persisted wake-up message for `content` (already framed). */
+function wakeUpMessage(content: string) {
+	return {
+		customType: WAKEUP_CUSTOM_TYPE,
+		content,
+		display: true,
+	};
+}
+
+/** Fetch the wake-up text and frame it as message content; null when unavailable. */
+async function fetchWakeUp(
+	wakeUp: WakeUpUseCase,
+	cwd: string,
+): Promise<string | null> {
+	const text = await wakeUp.execute(cwd);
+	return text ? formatWakeUpMessage(text) : null;
+}
 
 /**
  * Diary-write tool lookup across active ∪ all registered tools. Wrapped in
@@ -225,7 +274,18 @@ export function registerMempalaceEvents(
 		}
 		if (gate.hatchUsed) logHatchOnce(state, gate.reason);
 
-		state.wakeUpContext = await wakeUp.execute(ctx.cwd);
+		// Wake-up runs only at the start of a NEW session. A resume, restart or
+		// reload finds the wake-up message already saved in the session entries
+		// and reuses its text — no CLI call, and the persisted message replays
+		// byte-identically, so the cached prompt prefix holds. So does a fork
+		// that copies the wake-up; a fork from before the first prompt carries
+		// none and fetches fresh, as does a session from before this change (one
+		// fetch, and the old `mempalace` section's removal costs one cache
+		// miss). The entries decide, never a process-local flag: a restarted
+		// process carries no memory of what it sent. Handoff opens a new
+		// session, so it fetches fresh.
+		state.wakeUpContext =
+			findSavedWakeUp(readEntries(ctx)) ?? (await fetchWakeUp(wakeUp, ctx.cwd));
 
 		// Sync skills fire-and-forget. Swallow errors.
 		syncSkills(skillInstaller).catch(() => {});
@@ -326,47 +386,75 @@ export function registerMempalaceEvents(
 	});
 	*/
 
-	// ── before_agent_start — wake-up as a prompt section + per-prompt recall ─
-	// The wake-up context goes into `systemPromptOptions.sections.mempalace`
-	// rather than a returned `systemPrompt`: a returned prompt forces the whole
-	// system prompt for the run and defeats pi's transcript deltas. pi rebuilds
-	// the options from base every turn, so the section is set on EVERY turn —
-	// an unset turn would record a removal delta (and re-add churn after it).
-	pi.on("before_agent_start", async (event, _ctx) => {
-		// SAFETY: the handler type promises a full ExtensionContext, but some
-		// hosts deliver a minimal ctx whose `cwd` is absent at runtime; the cast
-		// only reads the property and `?? process.cwd()` covers a missing value.
-		const cwd: string = (_ctx as unknown as { cwd: string }).cwd ?? process.cwd();
-
-		// One-shot self-heal retry if wake-up failed at session_start.
+	// ── before_agent_start (1/2) — the wake-up conversation message ──────────
+	// The wake-up text is a persisted `mempalace-wakeup` custom message, never
+	// a system-prompt section: the system prompt stays byte-identical for the
+	// whole session, so a resume cannot break the cached prefix or invalidate
+	// earlier thinking blocks. It is returned from this hook, not sent at
+	// session_start, so it lands AFTER the run's leading system message: a
+	// custom message persisted ahead of the initial system message is the shape
+	// that drops the first turn's thinking (see docs/backlog/013).
+	// Inserted whenever the model context holds no wake-up message: the first
+	// run of a new session, and the first run after a compaction summarised
+	// it away — pi compacts BEFORE emitting this hook (pre-prompt compaction)
+	// or after the previous run, so the context entries already show it. The
+	// re-append is the SAME saved text, never a re-fetch: the L1 story moves
+	// with every diary entry. The session entries are the only state — no
+	// session_compact queue or process flag, which /reload or a second
+	// compaction would turn into duplicates. Registered BEFORE the recall
+	// hook, so the wake-up precedes the recall message.
+	pi.on("before_agent_start", async (_event, ctx) => {
 		// Gated per-event for subagent children (PRD §4 A1) — print-mode
 		// children reach wake-up exactly through this path, and the hatch is
 		// re-evaluated at every event (PRD A3).
 		const gate = resolveChildWakeupGate(process.env);
 		if (gate.skipWakeUp) {
 			logGateSkipOnce(state, gate.reason);
-		} else if (!state.wakeUpContext && !state.wakeUpRetried) {
+			return;
+		}
+		const context = readContextEntries(ctx);
+		if (context === null || !contextNeedsWakeUp(context)) return;
+
+		if (!state.wakeUpContext) state.wakeUpContext = findSavedWakeUp(readEntries(ctx));
+		// One-shot self-heal retry when session_start could not fetch (CLI
+		// failure, or print mode, which skips the session_start fetch). It runs
+		// only while no wake-up message exists — the context check above.
+		if (!state.wakeUpContext && !state.wakeUpRetried) {
 			state.wakeUpRetried = true;
 			if (gate.hatchUsed) logHatchOnce(state, gate.reason);
-			state.wakeUpContext = await wakeUp.execute(cwd);
+			// SAFETY: the handler type promises a full ExtensionContext, but some
+			// hosts deliver a minimal ctx whose `cwd` is absent at runtime; the
+			// cast only reads the property and `?? process.cwd()` covers it.
+			const cwd: string =
+				(ctx as unknown as { cwd?: string }).cwd ?? process.cwd();
+			state.wakeUpContext = await fetchWakeUp(wakeUp, cwd);
 		}
+		if (!state.wakeUpContext) return;
+		return { message: wakeUpMessage(state.wakeUpContext) };
+	});
 
-		if (state.wakeUpContext) {
-			// Optional chain: pi < 0.86 delivers no systemPromptOptions at runtime.
-			const sections = event.systemPromptOptions?.sections;
-			if (sections) sections[WAKEUP_SECTION] = state.wakeUpContext;
-			else logNoSectionsOnce(state);
-		}
+	// ── before_agent_start (2/2) — per-prompt recall ─────────────────────────────
+	// The recall message is built once, persisted by pi, and replayed from the
+	// session on every later call: its content is a pure function of the
+	// snippets (no timestamps or counters in the text) and `details` never
+	// reaches the model, so it serializes identically on every call.
+	pi.on("before_agent_start", async (event, _ctx) => {
+		// SAFETY: the handler type promises a full ExtensionContext, but some
+		// hosts deliver a minimal ctx whose `cwd` is absent at runtime; the cast
+		// only reads the property and `?? process.cwd()` covers a missing value.
+		const cwd: string = (_ctx as unknown as { cwd: string }).cwd ?? process.cwd();
 
-		// Short prompts ("yes", "go") skip recall only — the wake-up section
-		// above is set regardless, so short turns don't flap the prompt.
+		// Short prompts ("yes", "go") skip recall.
 		if (!event.prompt || event.prompt.length < 10) return;
 
-		// Settings-driven recall gate: master switch + child opt-in. The hatch
-		// above covers the wake-up leg ONLY — recall gating ignores it and reads
+		// Settings-driven recall gate: master switch + child opt-in. The wake-up
+		// hatch covers the wake-up leg ONLY — recall gating ignores it and reads
 		// the session_start settings snapshot (null → defaults, as if freshly
-		// parsed). Wake-up injection above stays fully independent of recall.
-		const features = childFeatureGates(gate.isChild, state.settings);
+		// parsed). Recall stays fully independent of the wake-up message.
+		const features = childFeatureGates(
+			resolveChildWakeupGate(process.env).isChild,
+			state.settings,
+		);
 		const recallResult = features.recall
 			? await recall.execute(event.prompt, cwd)
 			: null;

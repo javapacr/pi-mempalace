@@ -8,20 +8,28 @@
  * chain (Aug 8 backlog resolution).
  *
  * Active features (lifecycle hooks):
- * - session_start        — load wake-up context (L0+L1 ~940 tokens); reset
- *                          conversation counter; parse
+ * - session_start        — new session: fetch the wake-up context (L0+L1
+ *                          ~940 tokens); resume/restart/reload/fork: reuse
+ *                          the wake-up text saved in the session entries,
+ *                          no fetch; reset conversation counter; parse
  *                          mempalace settings (project .pi/settings.json over
  *                          profile, on all paths); sync skills; ensure MCP
  *                          registration — wake-up/sync/MCP SKIPPED for
  *                          subagent children (PI_SUBAGENT_CHILD=1) unless
  *                          the PI_MEMPALACE_CHILD_WAKEUP escape hatch applies
- * - before_agent_start   — set the wake-up context as the `mempalace`
- *                          prompt section every turn (pi >= 0.86; older
- *                          hosts skip it); recall per-prompt memories as a
+ * - before_agent_start   — insert the wake-up text as ONE persisted
+ *                          `mempalace-wakeup` conversation message when the
+ *                          model context has none (first run of a new
+ *                          session, or the first run after a compaction
+ *                          summarised it away — the SAME saved text, no
+ *                          re-fetch); never a system-prompt
+ *                          section, so the system prompt stays byte-identical
+ *                          all session; one-shot self-heal fetch when
+ *                          session_start had none, child-gated via the
+ *                          hatch. Then recall per-prompt memories as a
  *                          custom message; recall gated by settings
  *                          (recall_on_prompt master switch; children also
- *                          need children.recall, default off) — wake-up
- *                          self-heal retry stays child-gated via the hatch
+ *                          need children.recall, default off)
  * - agent_end            — every save_interval (default 15) exchanges,
  *                          inject an in-session curation checkpoint;
  *                          subagent children skip it unless
@@ -54,6 +62,8 @@
  *                          settle nudge quiet
  * - session_before_compact — mine the session transcript before it is
  *                          summarised, preserving verbatim text in MemPalace
+ *                          (transcripts MemPalace would ingest as raw JSON —
+ *                          system prompt + tool schemas — are skipped)
  * - session_shutdown     — background mine on quit and on session
  *                          replacement (new/resume/fork; not reload —
  *                          that session continues and is mined at quit)
@@ -71,7 +81,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SessionState } from "./domain/types";
 import { MempalaceCli } from "./infrastructure/mempalace-cli";
 import { registerMempalaceEvents } from "./infrastructure/event-registration";
-import { registerRecallRenderer } from "./ui/recall-renderer";
+import {
+	registerRecallRenderer,
+	registerWakeUpRenderer,
+} from "./ui/recall-renderer";
 import { WakeUpUseCase } from "./application/wake-up.usecase";
 import { RecallUseCase } from "./application/recall.usecase";
 import { CurationUseCase } from "./application/curation.usecase";
@@ -89,6 +102,7 @@ export default function mempalaceExtension(pi: ExtensionAPI): void {
 	const mining = new MiningUseCase(cli);
 
 	registerRecallRenderer(pi);
+	registerWakeUpRenderer(pi);
 	registerMempalaceEvents(pi, state, wakeUp, recall, curation, mining, {
 		readSkillDirState: skillInstaller.readSkillDirState,
 		installSkill: skillInstaller.installSkill,

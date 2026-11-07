@@ -13,14 +13,25 @@
  */
 
 import type { MempalaceCli } from "../infrastructure/mempalace-cli";
+import { isMinableTranscript } from "../infrastructure/transcript-probe";
 import { resolveMempalaceConfig } from "../domain/palace-router";
 import type { MempalaceConfig } from "../domain/types";
 
+/**
+ * Both modes first ask `isMinable` whether MemPalace would parse the file as
+ * a pi conversation. A transcript it would ingest as raw JSON (fewer than two
+ * text messages) is skipped: that fallback chunks pi's system prompt and tool
+ * JSON schemas into drawers (domain/pi-transcript.ts, docs/backlog/012).
+ */
 export class MiningUseCase {
-	constructor(private readonly cli: MempalaceCli) {}
+	constructor(
+		private readonly cli: MempalaceCli,
+		private readonly isMinable: (sessionFile: string) => boolean = isMinableTranscript,
+	) {}
 
 	/** Synchronous mine — awaits completion. Non-fatal on failure. */
 	async mineSync(sessionFile: string, cwd: string): Promise<void> {
+		if (!this.isMinable(sessionFile)) return;
 		const config = await resolveMempalaceConfig(cwd);
 		try {
 			await this.cli.run(
@@ -37,9 +48,11 @@ export class MiningUseCase {
 	 * teardowns (new/resume/fork); reload is skipped (same session continues).
 	 *
 	 * Takes a pre-resolved config so the shutdown path is fully
-	 * synchronous: no file reads, no promises, no lingering handles.
+	 * synchronous: no config reads, no promises, no lingering handles. The
+	 * minability probe is a bounded synchronous read of the transcript head.
 	 */
 	mineBackground(sessionFile: string, config: MempalaceConfig): void {
+		if (!this.isMinable(sessionFile)) return;
 		this.cli.spawnBackground(
 			["mine", sessionFile, "--mode", "convos", "--wing", "sessions"],
 			config,
