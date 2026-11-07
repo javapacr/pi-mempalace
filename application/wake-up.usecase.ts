@@ -1,8 +1,9 @@
 /**
  * WakeUpUseCase — loads the MemPalace wake-up context at session start.
  *
- * Produces the L0+L1 summary (~940 tokens) that is injected into the system
- * prompt for the whole session. The CLI wake-up text is passed through
+ * Produces the L0+L1 summary (~940 tokens). Fetched once per new session and
+ * persisted as a `mempalace-wakeup` conversation message (never the system
+ * prompt; see domain/wake-up-message.ts). The CLI wake-up text is passed through
  * untouched — no wing-policy line is appended extension-side (extensions ship
  * mechanism, not palace-organization policy; wing-routing knowledge comes
  * from MemPalace core tool descriptions and user-side docs).

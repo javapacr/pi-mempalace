@@ -15,3 +15,5 @@ Small, individually shippable items — one file each under `docs/backlog/`.
 | [009](docs/backlog/009-curation-prompt-diary-tool-name.md) | Curation prompt names the diary tool by exact name, not suffix | open · P3 |
 | [010](docs/backlog/010-handoff-nudge-drains-curation-checkpoint.md) | Idle `/handoff` nudge run drains a pending curation checkpoint (W2.R2) | done — W3 (#6): checkpoint-variant nudge |
 | [011](docs/backlog/011-subagent-child-agent-env-dropped-upstream.md) | pi-subagents no longer exports `PI_SUBAGENT_CHILD_AGENT`; per-agent wake-up hatch is dead | open · P2 |
+| [012](docs/backlog/012-core-pi-jsonl-raw-fallback.md) | MemPalace core raw-ingests short pi transcripts (tool schemas in drawers); extension guard shipped, core fix + palace cleanup open | open · P2 (core) |
+| [013](docs/backlog/013-first-turn-thinking-dropped.md) | First-turn thinking dropped when a custom message precedes the initial system message (`handoff-origin`); recall exonerated | open · P2 (pi / pi-handoff) |
